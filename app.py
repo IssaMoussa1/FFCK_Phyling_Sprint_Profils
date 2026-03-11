@@ -14,6 +14,7 @@ Onglets :
 """
 
 import os
+import re
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -27,7 +28,7 @@ from scipy.signal import butter, filtfilt, find_peaks
 from scipy.interpolate import interp1d
 from scipy.cluster.hierarchy import dendrogram, linkage
 from scipy.spatial.distance import pdist
-from scipy.stats import pearsonr
+from scipy.stats import pearsonr, spearmanr
 import streamlit as st
 import warnings
 warnings.filterwarnings('ignore')
@@ -36,24 +37,235 @@ warnings.filterwarnings('ignore')
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────────────────────
-DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
+DATA_DIR   = os.path.join(os.path.dirname(__file__), 'data')
+CACHE_DIR  = os.path.join(DATA_DIR, 'cache')
+REGISTRE   = os.path.join(DATA_DIR, 'registre.csv')
 
-ATHLETES_FILES = {
-    'Bavenkoff Viktor':   {'250m': 'bavenkoff_viktor-20260218_024153-sel_250.csv',
-                           '2000m': 'bavenkoff_viktor-20260218_024153-sel_2000.csv'},
-    'Gilhard Tom':        {'250m': 'gilhard_tom-20260215_101526-sel_250.csv',
-                           '2000m': 'gilhard_tom-20260215_101526-sel_2000.csv'},
-    'Polet Theophile':    {'250m': 'polet_theophile-20260215_103845-sel_250.csv',
-                           '2000m': 'polet_theophile-20260215_103845-sel_2000.csv'},
-    'Siabas Simon':       {'250m': 'siabas_simon_anatole-20260215_101514-sel_250.csv',
-                           '2000m': 'siabas_simon_anatole-20260215_101514-sel_2000.csv'},
-    'Zappaterra Clement': {'250m': 'zappaterra_clement-20260215_111129-sel_250.csv',
-                           '2000m': 'zappaterra_clement-20260215_111129-sel_2000.csv'},
-    'Zoualegh Nathan':    {'250m': 'zoualegh_nathan-20260215_084430-sel_250.csv',
-                           '2000m': 'zoualegh_nathan-20260215_084430-sel_2000.csv'},
-    'Zwiller Tao':        {'250m': 'zwiller_tao-20260215_102746-sel_250.csv',
-                           '2000m': 'zwiller_tao-20260215_102746-sel_2000.csv'},
-}
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REGISTRE & CACHE
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_filename(fname):
+    """
+    Extrait (athlete, distance, date, heure, sel) depuis le nom de fichier.
+
+    Formats supportés :
+      Nouveau : romney_ruben-20260308_095034-500m-sel_1.csv
+      Ancien  : bavenkoff_viktor20260218_024153sel_250.csv
+
+    Retourne un dict ou None si non reconnu.
+    """
+    base = os.path.splitext(os.path.basename(fname))[0]
+
+    # ── Format nouveau : parties séparées par '-' ──────────────────────────
+    # romney_ruben-20260308_095034-500m-sel_1
+    # Style A : romney_ruben-20260308_095034-500m-sel_1
+    m_new = re.match(
+        r'^([a-z][a-z0-9_]+)-([0-9]{8})_([0-9]{6})-([0-9]+m)-sel_([0-9]+)$',
+        base, re.IGNORECASE
+    )
+    if m_new:
+        name_raw, date_raw, heure_raw, dist, sel = m_new.groups()
+        athlete  = ' '.join(w.capitalize() for w in name_raw.split('_'))
+        date_str = '{}-{}-{}'.format(date_raw[:4], date_raw[4:6], date_raw[6:])
+        heure_str = '{}:{}'.format(heure_raw[:2], heure_raw[2:4])
+        return {
+            'athlete':  athlete,
+            'distance': dist,
+            'date':     date_str,
+            'heure':    heure_str,
+            'sel':      sel,
+            'format':   'nouveau_a',
+        }
+
+    # Style B : bonnavaud_marine-20260303_091820-sel_500
+    m_b = re.match(
+        r'^([a-z][a-z0-9_]+)-([0-9]{8})_([0-9]{6})-sel_([0-9]+)$',
+        base, re.IGNORECASE
+    )
+    if m_b:
+        name_raw, date_raw, heure_raw, dist_raw = m_b.groups()
+        athlete  = ' '.join(w.capitalize() for w in name_raw.split('_'))
+        date_str = '{}-{}-{}'.format(date_raw[:4], date_raw[4:6], date_raw[6:])
+        heure_str = '{}:{}'.format(heure_raw[:2], heure_raw[2:4])
+        return {
+            'athlete':  athlete,
+            'distance': dist_raw + 'm',
+            'date':     date_str,
+            'heure':    heure_str,
+            'sel':      '1',
+            'format':   'nouveau_b',
+        }
+
+    # ── Format ancien : nom+date collés, sel_250 ou sel_2000 à la fin ──────
+    # bavenkoff_viktor20260218_024153sel_250
+    m_old = re.match(
+        r'^([a-z][a-z0-9_]+?)([0-9]{8})_?([0-9]{6})sel[_-]([0-9]+)$',
+        base, re.IGNORECASE
+    )
+    if m_old:
+        name_raw, date_raw, heure_raw, dist_raw = m_old.groups()
+        athlete  = ' '.join(w.capitalize() for w in name_raw.strip('_').split('_'))
+        date_str = '{}-{}-{}'.format(date_raw[:4], date_raw[4:6], date_raw[6:])
+        heure_str = '{}:{}'.format(heure_raw[:2], heure_raw[2:4])
+        dist     = dist_raw + 'm'
+        return {
+            'athlete':  athlete,
+            'distance': dist,
+            'date':     date_str,
+            'heure':    heure_str,
+            'sel':      '1',
+            'format':   'ancien',
+        }
+
+    return None
+
+
+def scan_data_dir():
+    """
+    Parcourt DATA_DIR, détecte tous les CSV Maxi-Phyling reconnus,
+    retourne une liste de dicts pour le registre.
+    """
+    rows = []
+    if not os.path.isdir(DATA_DIR):
+        return rows
+    for fname in sorted(os.listdir(DATA_DIR)):
+        if not fname.endswith('.csv') or fname == 'registre.csv':
+            continue
+        info = _parse_filename(fname)
+        if info is None:
+            continue
+        rows.append({
+            'fichier':   fname,
+            'athlete':   info['athlete'],
+            'distance':  info['distance'],
+            'date':      info['date'],
+            'heure':     info.get('heure', ''),
+            'sel':       info.get('sel', '1'),
+            'notes':     '',
+        })
+    return rows
+
+
+def load_registre():
+    """
+    Charge registre.csv, fusionne avec les nouveaux fichiers détectés,
+    sauvegarde si des nouveautés sont trouvées.
+    Colonnes : fichier, athlete, distance, date, heure, sel, notes.
+    """
+    cols = ['fichier', 'athlete', 'distance', 'date', 'heure', 'sel', 'notes']
+
+    if os.path.exists(REGISTRE):
+        df_reg = pd.read_csv(REGISTRE, dtype=str).fillna('')
+        for c in cols:
+            if c not in df_reg.columns:
+                df_reg[c] = ''
+    else:
+        df_reg = pd.DataFrame(columns=cols)
+
+    # Supprimer les entrees dont le fichier n'existe pas sur disque
+    df_reg = df_reg[df_reg['fichier'].apply(
+        lambda f: os.path.exists(os.path.join(DATA_DIR, f))
+    )].copy()
+
+    # Ajouter les nouveaux fichiers detectes
+    scanned = pd.DataFrame(scan_data_dir())
+    if not scanned.empty:
+        existing  = set(df_reg['fichier'].values)
+        new_files = scanned[~scanned['fichier'].isin(existing)]
+        if not new_files.empty:
+            df_reg = pd.concat([df_reg, new_files], ignore_index=True)
+
+    # Dedoublonner sur le nom de fichier (garde la premiere occurrence)
+    df_reg = df_reg.drop_duplicates(subset=['fichier'], keep='first').reset_index(drop=True)
+
+    # Sauvegarder le registre nettoye
+    df_reg.to_csv(REGISTRE, index=False)
+
+    return df_reg
+
+
+def get_athletes_list(df_reg):
+    """Retourne la liste triée des noms d'athlètes uniques."""
+    if df_reg.empty:
+        return []
+    return sorted(df_reg['athlete'].dropna().unique().tolist())
+
+
+def get_sessions_for_athlete(df_reg, athlete, distance):
+    """
+    Retourne les sessions disponibles pour un athlète + distance donnés.
+    Chaque session = dict {label, fichier, date, heure, sel}.
+    """
+    mask = (df_reg['athlete'] == athlete) & (df_reg['distance'] == distance)
+    sub  = df_reg[mask].sort_values(['date', 'heure', 'sel'])
+    sessions = []
+    for _, row in sub.iterrows():
+        parts = []
+        if row.get('date'):
+            parts.append(row['date'])
+        if row.get('heure'):
+            parts.append(row['heure'])
+        if row.get('sel') and row['sel'] != '1':
+            parts.append('sel ' + row['sel'])
+        label = ' — '.join(parts) if parts else row['fichier']
+        sessions.append({
+            'label':   label,
+            'fichier': row['fichier'],
+            'date':    row.get('date', ''),
+            'heure':   row.get('heure', ''),
+            'sel':     row.get('sel', '1'),
+        })
+    return sessions
+
+
+# ── Cache pickle ──────────────────────────────────────────────────────────────
+
+def _cache_path(fname, fc, min_d, min_h):
+    """Chemin du fichier cache .pkl pour une combinaison fichier+paramètres."""
+    import hashlib
+    key = '{}|{:.3f}|{:.3f}|{:.3f}'.format(fname, fc, min_d, min_h)
+    h   = hashlib.md5(key.encode()).hexdigest()[:12]
+    return os.path.join(CACHE_DIR, f"{os.path.splitext(fname)[0]}_{h}.pkl")
+
+
+def load_with_cache(fname, fc, min_d, min_h):
+    """
+    Charge et détecte les coups pour fname.
+    - Si un cache valide existe (plus récent que le CSV), le relit.
+    - Sinon, appelle load_and_detect et sauvegarde le résultat.
+    Retourne (strokes, raw_signals).
+    """
+    import pickle
+    csv_path   = os.path.join(DATA_DIR, fname)
+    cache_path = _cache_path(fname, fc, min_d, min_h)
+
+    # Cache valide = fichier pkl existe ET est plus récent que le CSV
+    if os.path.exists(cache_path) and os.path.exists(csv_path):
+        if os.path.getmtime(cache_path) >= os.path.getmtime(csv_path):
+            try:
+                with open(cache_path, 'rb') as f:
+                    data = pickle.load(f)
+                return data['strokes'], data['raw']
+            except Exception:
+                pass  # Cache corrompu → on recalcule
+
+    # Calcul complet
+    strokes, raw = load_and_detect(fname, fc, min_d, min_h)
+
+    # Sauvegarde dans le cache
+    try:
+        with open(cache_path, 'wb') as f:
+            pickle.dump({'strokes': strokes, 'raw': raw,
+                         'fc': fc, 'min_d': min_d, 'min_h': min_h}, f)
+    except Exception:
+        pass  # Échec silencieux : on continue sans cache
+
+    return strokes, raw
+
 
 FC_SMOOTH  = 3.0
 MIN_DIST_S = 0.25
@@ -205,7 +417,7 @@ def load_and_detect(fname, fc=FC_SMOOTH, min_d=MIN_DIST_S, min_h=MIN_PEAK_H):
                         'auc_pos':auc_pos,'auc_neg':auc_neg,'auc_abs':auc_abs,
                         'rfd':rfd,'jerk_rms':jerk,'pos_pic_pct':pos_pic,
                         'fwhm_s':fwhm,'sym_ratio':sym,'acc_norm':an.tolist()})
-    raw = {'T':t.tolist(),'acc_x':acc.tolist(),'D':D.tolist()}
+    raw = {'T':t.tolist(),'acc_x':acc.tolist(),'D':D.tolist(),'speed':spd.tolist()}
     return strokes, raw
 
 
@@ -327,21 +539,24 @@ def fig_profil_auc(strokes, name, c):
 
 
 def fig_tous_coups_no_cbar(strokes, name, c):
-    """Coups individuels + profil moyen, SANS colorbar ni légende distance."""
+    """Coups individuels + profil moyen, sans colorbar."""
     mat = get_mat(strokes); mu, sd = mat.mean(0), mat.std(0)
-    d_s  = np.sort([s['D_start'] for s in strokes])
-    d_n  = (d_s-d_s.min())/(d_s.max()-d_s.min()+1e-9)
-    fig, ax = plt.subplots(figsize=(8,5)); style_fig(fig); style_ax(ax)
+    d_s = np.sort([s['D_start'] for s in strokes])
+    d_n = (d_s - d_s.min()) / (d_s.max() - d_s.min() + 1e-9)
+    fig, ax = plt.subplots(figsize=(8, 5)); style_fig(fig); style_ax(ax)
     for ai, dr in zip(mat, d_n):
-        ax.plot(xn,ai,color=plt.cm.RdYlGn(dr),lw=0.55,alpha=0.15,zorder=1)
-    ax.fill_between(xn,mu-sd,mu+sd,alpha=0.22,color=C_MEAN,zorder=2)
-    ax.plot(xn,mu,color=C_MEAN,lw=3.5,zorder=3,label=f'Profil moyen  (n={len(strokes)})')
-    ax.axhline(0,color='#616161',lw=0.8,ls='--',alpha=0.6)
-    ax.scatter(xn[np.argmax(mu)],mu.max(),color=C_POS,s=90,zorder=5,marker='^')
-    ax.scatter(xn[np.argmin(mu)],mu.min(),color=C_NEG,s=90,zorder=5,marker='v')
-    ax.set_xlabel('Cycle normalisé (%)',fontsize=10)
-    ax.set_ylabel('acc_x (m/s²)',fontsize=10)
-    ax.set_title(f'Coups individuels\n(rouge=début → vert=fin)',fontsize=11,fontweight='bold')
+        ax.plot(xn, ai, color=plt.cm.RdYlGn(dr), lw=0.6, alpha=0.18, zorder=1)
+    ax.fill_between(xn, mu-sd, mu+sd, alpha=0.22, color=C_MEAN, zorder=2)
+    ax.plot(xn, mu, color=C_MEAN, lw=3.5, zorder=3, label='Profil moyen  (n={})'.format(len(strokes)))
+    ax.axhline(0, color='#616161', lw=0.8, ls='--', alpha=0.6)
+    ax.scatter(xn[np.argmax(mu)], mu.max(), color=C_POS, s=90, zorder=5, marker='^')
+    ax.scatter(xn[np.argmin(mu)], mu.min(), color=C_NEG, s=90, zorder=5, marker='v')
+    ax.set_xlabel('Cycle normalise (%)', fontsize=10)
+    ax.set_ylabel('acc_x (m/s²)', fontsize=10)
+    ax.set_title(
+        'Coups individuels  (n={})\nrouge = debut  ->  vert = fin'.format(len(strokes)),
+        fontsize=11, fontweight='bold'
+    )
     ax.legend(fontsize=9)
     plt.tight_layout(); return fig
 
@@ -567,6 +782,102 @@ def fig_matrice(strokes_dict, name_list):
     plt.tight_layout(); return fig
 
 
+def fig_vitesse(raw_signals_dict, strokes_dict, name_list, w):
+    """Profil de vitesse GPS filtrée au fil de la distance."""
+    fig, ax = plt.subplots(figsize=(13, 5)); style_fig(fig); style_ax(ax)
+    for name in name_list:
+        raw = raw_signals_dict.get(name, {})
+        if not raw or 'speed' not in raw: continue
+        strokes = strokes_dict.get(name, [])
+        if not strokes: continue
+        D_all   = np.array(raw['D'])
+        spd_all = np.array(raw['speed'])
+        d0 = min(s['D_start'] for s in strokes)
+        d1 = max(s['D_end']   for s in strokes)
+        mask = (D_all >= d0) & (D_all <= d1) & np.isfinite(spd_all) & (spd_all > 0)
+        if mask.sum() < 10: continue
+        D_rel = D_all[mask] - d0
+        spd   = spd_all[mask]
+        c     = ath_color(name, name_list)
+        ax.plot(D_rel, spd, color=c, lw=0.6, alpha=0.18, zorder=1)
+        w_gps = max(10, w * 8)
+        spd_smooth = pd.Series(spd).rolling(w_gps, center=True, min_periods=1).mean().values
+        v_moy = spd_smooth.mean()
+        ax.plot(D_rel, spd_smooth, color=c, lw=2.8, zorder=3,
+                label=f'{name.split()[-1]}  (moy. {v_moy:.1f} km/h)')
+    ax.set_xlabel('Distance relative (m)', fontsize=11)
+    ax.set_ylabel('Vitesse (km/h)', fontsize=11)
+    ax.set_title('Profil de vitesse au fil de la course\n'
+                 'Trait lissé + signal brut en transparence  ·  speed = GPS filtré passe-bas',
+                 fontsize=11, fontweight='bold')
+    ax.legend(fontsize=9, ncol=2, framealpha=0.85)
+    plt.tight_layout(); return fig
+
+
+def fig_vitesse_vs_metrique(strokes_dict, name_list, metric, w):
+    """Vitesse par coup vs métrique technique, sur le même axe de distance."""
+    ylabel, title = METRIC_META[metric]
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(13, 8), sharex=True)
+    style_fig(fig); style_ax(ax1); style_ax(ax2)
+    for name in name_list:
+        strokes = strokes_dict.get(name, [])
+        if not strokes: continue
+        df_s = to_df(strokes)
+        df_s['D_rel'] = df_s['D_start'] - df_s['D_start'].min()
+        c = ath_color(name, name_list)
+        x  = df_s['D_rel'].values
+        y1 = df_s['speed_moy'].values
+        y2 = df_s[metric].values
+        m1 = np.isfinite(y1) & (y1 > 0); m2 = np.isfinite(y2)
+        if m1.sum() > 3:
+            ax1.scatter(x[m1], y1[m1], alpha=0.10, s=12, color=c, zorder=1)
+            xs, ys = rolling_mean(x[m1], y1[m1], w)
+            ax1.plot(xs, ys, color=c, lw=2.5, label=name.split()[-1], zorder=3)
+        if m2.sum() > 3:
+            ax2.scatter(x[m2], y2[m2], alpha=0.10, s=12, color=c, zorder=1)
+            xs, ys = rolling_mean(x[m2], y2[m2], w)
+            ax2.plot(xs, ys, color=c, lw=2.5, zorder=3)
+    ax1.set_ylabel('Vitesse moy./coup (km/h)', fontsize=10)
+    ax1.set_title('Vitesse par coup', fontsize=11, fontweight='bold')
+    ax1.legend(fontsize=9, ncol=2, framealpha=0.85)
+    ax2.set_ylabel(ylabel, fontsize=10)
+    ax2.set_xlabel('Distance relative (m)', fontsize=10)
+    ax2.set_title(title, fontsize=11, fontweight='bold')
+    fig.suptitle('Vitesse vs technique — un coup "pas joli" peut-il aller vite ?',
+                 fontsize=12, fontweight='bold')
+    plt.tight_layout(); return fig
+
+
+def fig_scatter_vitesse(strokes_dict, name_list, metric_x):
+    """Scatter : métrique technique vs vitesse par coup."""
+    xlabel = METRIC_META.get(metric_x, (metric_x, ''))[0]
+    fig, ax = plt.subplots(figsize=(11, 7)); style_fig(fig); style_ax(ax)
+    for name in name_list:
+        strokes = strokes_dict.get(name, [])
+        if not strokes: continue
+        df_s = to_df(strokes); c = ath_color(name, name_list)
+        x = df_s[metric_x].values
+        y = df_s['speed_moy'].values
+        mask = np.isfinite(x) & np.isfinite(y) & (y > 0)
+        x, y = x[mask], y[mask]
+        if len(x) < 3: continue
+        ax.scatter(x, y, alpha=0.15, s=18, color=c, zorder=2)
+        confidence_ellipse(x, y, ax, n_std=1.5, facecolor=c, alpha=0.07,
+                           edgecolor=c, linewidth=1.5, linestyle='--', zorder=3)
+        cx, cy = x.mean(), y.mean()
+        ax.scatter(cx, cy, color=c, s=230, zorder=5, edgecolors='white',
+                   linewidths=1.5, marker='D',
+                   label=f'{name.split()[-1]}  ({cy:.1f} km/h)')
+        ax.annotate(name.split()[-1], (cx, cy), textcoords='offset points',
+                    xytext=(8, 5), fontsize=9.5, color=c, fontweight='bold')
+    ax.set_xlabel(xlabel, fontsize=11)
+    ax.set_ylabel('Vitesse moy. par coup (km/h)', fontsize=11)
+    ax.set_title(f'{xlabel} vs Vitesse par coup\n♦ = centroïde · Ellipse ±1.5σ',
+                 fontsize=11, fontweight='bold')
+    ax.legend(fontsize=8.5, ncol=2, framealpha=0.85)
+    plt.tight_layout(); return fig
+
+
 def fig_distribution(strokes_dict, metric, name_list):
     ylabel = METRIC_META.get(metric,(metric,metric))[0]
     fig,ax = plt.subplots(figsize=(12,4)); style_fig(fig); style_ax(ax)
@@ -583,6 +894,682 @@ def fig_distribution(strokes_dict, metric, name_list):
     plt.tight_layout(); return fig
 
 
+
+def build_tab_temporel(valid_names, filt_strokes, raw_signals, selected, roll_w):
+    st.markdown(
+        '<div class="note">'
+        '<b>Onglet temporaire — usage pedagogique</b><br>'
+        "L'axe X est le <b>temps reel en secondes</b> depuis le debut du coup (non normalise 0-100 %).<br>"
+        '<b>Avantage :</b> intuitif, on voit la duree reelle du coup.<br>'
+        '<b>Limite :</b> la moyenne est tronquee a la duree du coup le plus court — '
+        "c'est exactement ce probleme que resout le cycle normalise dans les autres onglets."
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        ath_t5 = (
+            st.selectbox('Athlete', valid_names, key='t5_ath')
+            if valid_names else None
+        )
+    strokes_t5 = filt_strokes.get(ath_t5, []) if ath_t5 else []
+    with col_b:
+        if strokes_t5:
+            coup_num = st.number_input(
+                'Numero du coup', min_value=1, max_value=len(strokes_t5),
+                value=1, step=1,
+                help='Utilisez les fleches ou tapez le numero'
+            )
+        else:
+            coup_num = 1
+
+    if not strokes_t5:
+        st.info('Aucun coup disponible.')
+        return
+
+    c_t5       = ath_color(ath_t5, selected)
+    stroke_sel = strokes_t5[int(coup_num) - 1]
+    raw_t5     = raw_signals.get(ath_t5, {})
+    if not raw_t5:
+        return
+
+    T_all   = np.array(raw_t5['T'])
+    acc_all = np.array(raw_t5['acc_x'])
+    D_all   = np.array(raw_t5['D'])
+
+    # Donnees du coup selectionne
+    mask_coup = (D_all >= stroke_sel['D_start']) & (D_all <= stroke_sel['D_end'])
+    t_coup    = T_all[mask_coup]
+    acc_coup  = acc_all[mask_coup]
+    if len(t_coup) < 4:
+        st.warning('Trop peu de points.')
+        return
+
+    t_rel = t_coup - t_coup[0]
+    dur   = float(t_rel[-1])
+    pk_i  = int(np.argmax(acc_coup))
+
+    # Profil moyen en temps absolu (tronque a dur_min)
+    all_durations = [s['duration'] for s in strokes_t5]
+    dur_min = float(min(all_durations))
+    dur_max = float(max(all_durations))
+    n_pts   = max(4, int(dur_min * 100))
+    t_mean_axis = np.linspace(0, dur_min, n_pts)
+
+    mats = []
+    d_starts = []
+    for s in strokes_t5:
+        mask_s = (D_all >= s['D_start']) & (D_all <= s['D_end'])
+        acc_s  = acc_all[mask_s]
+        if len(acc_s) >= n_pts:
+            mats.append(acc_s[:n_pts])
+            d_starts.append(s['D_start'])
+
+    show_mean = len(mats) >= 3
+
+    # ── Disposition cote a cote comme l'onglet Analyse individuelle ──────
+    st.markdown('<div class="sh">Coups individuels et profil moyen — axe en secondes reelles</div>',
+                unsafe_allow_html=True)
+
+    col1, col2 = st.columns(2)
+
+    # ── Gauche : tous les coups individuels + coup selectionne mis en avant
+    with col1:
+        d_s_all = np.array(d_starts)
+        d_n_all = (d_s_all - d_s_all.min()) / (d_s_all.max() - d_s_all.min() + 1e-9) if len(d_s_all) > 1 else np.zeros(len(d_s_all))
+
+        fig_ind, ax_ind = plt.subplots(figsize=(8, 5))
+        style_fig(fig_ind); style_ax(ax_ind)
+
+        # Tous les coups a leur duree COMPLETE (pas tronques)
+        for s_i, dn_i in zip(strokes_t5, d_n_all):
+            mask_si = (D_all >= s_i['D_start']) & (D_all <= s_i['D_end'])
+            t_si    = T_all[mask_si]
+            acc_si  = acc_all[mask_si]
+            if len(t_si) > 1:
+                ax_ind.plot(t_si - t_si[0], acc_si,
+                            color=plt.cm.RdYlGn(dn_i), lw=0.6, alpha=0.18, zorder=1)
+
+        # Coup selectionne mis en avant
+        ax_ind.plot(t_rel, acc_coup, color=c_t5, lw=2.8, zorder=4,
+                    label='Coup n{} ({:.3f} s)'.format(int(coup_num), dur))
+        ax_ind.scatter(t_rel[pk_i], acc_coup[pk_i], color=C_POS,
+                       s=100, zorder=6, marker='^', edgecolors='white', linewidths=1)
+
+        # Profil moyen si dispo
+        if show_mean:
+            mat_m  = np.vstack(mats)
+            mu_abs = mat_m.mean(0)
+            ax_ind.plot(t_mean_axis, mu_abs, color=C_MEAN, lw=2.5, ls='--',
+                        zorder=3, label='Profil moyen ({} coups)'.format(len(mats)))
+
+        ax_ind.axhline(0, color='#616161', lw=0.8, ls='--', alpha=0.6)
+        ax_ind.set_xlabel('Temps depuis le debut du coup (s)', fontsize=10)
+        ax_ind.set_ylabel('acc_x (m/s2)', fontsize=10)
+        ax_ind.set_title(
+            'Coups individuels  (n={})\nrouge = debut  ->  vert = fin'.format(len(mats)),
+            fontsize=11, fontweight='bold'
+        )
+        ax_ind.legend(fontsize=9)
+        plt.tight_layout()
+        st.pyplot(fig_ind)
+
+    # ── Droite : profil moyen avec AUC + ombrages
+    with col2:
+        if show_mean:
+            mat_m  = np.vstack(mats)
+            mu_abs = mat_m.mean(0)
+            sd_abs = mat_m.std(0)
+
+            fig_moy, ax_moy = plt.subplots(figsize=(8, 5))
+            style_fig(fig_moy); style_ax(ax_moy)
+
+            # Ombrages
+            ax_moy.fill_between(t_mean_axis, mu_abs - 2*sd_abs, mu_abs + 2*sd_abs,
+                                 alpha=0.07, color=c_t5, label='+-2sigma (95% des coups)')
+            ax_moy.fill_between(t_mean_axis, mu_abs - sd_abs, mu_abs + sd_abs,
+                                 alpha=0.20, color=c_t5, label='+-1sigma (68% des coups)')
+
+            # AUC zones (sur le profil moyen tronque)
+            auc_pos_mean = np.trapezoid(np.clip(mu_abs, 0, None), t_mean_axis)
+            auc_neg_mean = abs(np.trapezoid(np.clip(mu_abs, None, 0), t_mean_axis))
+            ax_moy.fill_between(t_mean_axis, mu_abs, 0, where=(mu_abs > 0),
+                                 alpha=0.38, color=C_POS,
+                                 label='Propulsion  AUC+={:.4f} m/s'.format(auc_pos_mean))
+            ax_moy.fill_between(t_mean_axis, mu_abs, 0, where=(mu_abs < 0),
+                                 alpha=0.38, color=C_NEG,
+                                 label='Freinage  |AUC-|={:.4f} m/s'.format(auc_neg_mean))
+
+            ax_moy.plot(t_mean_axis, mu_abs, color=c_t5, lw=3, zorder=5, label='Profil moyen')
+            ax_moy.scatter(t_mean_axis[np.argmax(mu_abs)], mu_abs.max(),
+                           color=C_POS, s=110, zorder=7, marker='^', edgecolors='white', linewidths=1)
+            ax_moy.scatter(t_mean_axis[np.argmin(mu_abs)], mu_abs.min(),
+                           color=C_NEG, s=110, zorder=7, marker='v', edgecolors='white', linewidths=1)
+            ax_moy.axhline(0, color='#616161', lw=0.8, ls='--', alpha=0.6)
+
+            # Encart metriques
+            df_s = to_df(strokes_t5)
+            ax_moy.text(0.015, 0.975,
+                'n = {} coups\nSym ratio = {:.3f}\n% cycle prop. = {:.1f}%\nPic acc = {:.2f} m/s2'.format(
+                    len(mats),
+                    df_s['sym_ratio'].mean(),
+                    df_s['t_acc_frac'].mean()*100,
+                    df_s['pic_acc'].mean()
+                ),
+                transform=ax_moy.transAxes, fontsize=8.5, va='top', family='monospace',
+                bbox=dict(boxstyle='round,pad=0.4', facecolor='white', alpha=0.82, edgecolor=C_GRID)
+            )
+
+            ax_moy.set_xlabel('Temps depuis le debut du coup (s)', fontsize=10)
+            ax_moy.set_ylabel('acc_x (m/s2)', fontsize=10)
+            ax_moy.set_title(
+                'Profil moyen — {}\ntronque a {:.3f} s (coup le plus court)'.format(ath_t5, dur_min),
+                fontsize=11, fontweight='bold'
+            )
+            ax_moy.legend(fontsize=8.5, loc='lower right', framealpha=0.85)
+            plt.tight_layout()
+            st.pyplot(fig_moy)
+        else:
+            st.info('Pas assez de coups pour calculer un profil moyen.')
+
+    # Note pedagogique
+    st.markdown(
+        '<div class="note">'
+        '<b>Pourquoi le profil moyen est-il tronque a {:.3f} s ?</b> '
+        'Les coups durent entre {:.3f} s et {:.3f} s. '
+        'Pour moyenner point a point, tous les tableaux doivent avoir la meme longueur. '
+        'On tronque donc a la duree minimale — on perd la fin des coups plus longs.<br>'
+        '<b>Le cycle normalise (0-100 %) dans les autres onglets evite ce probleme '
+        'en etirant ou comprimant chaque coup pour lui donner la meme longueur.</b>'
+        '</div>'.format(dur_min, min(all_durations), max(all_durations)),
+        unsafe_allow_html=True
+    )
+
+
+# ══ ONGLET PERFORMANCE ════════════════════════════════════════════════════════
+
+ACC_METRICS = [
+    ('pic_acc',    'Pic acc (m/s²)',       'Force brute — valeur max de l\'acc propulsive'),
+    ('pic_down',   'Pic freinage (m/s²)',   'Pic de décélération (négatif = fort freinage)'),
+    ('auc_pos',    'AUC+ (m/s)',            'Impulsion propulsive totale par coup'),
+    ('auc_neg',    'AUC- (m/s)',            'Impulsion de freinage totale par coup'),
+    ('sym_ratio',  'Sym ratio',             'Équilibre freinage/propulsion |AUC-|/AUC+'),
+    ('rfd',        'RFD (m/s³)',            'Rate of Force Development — montée au pic'),
+    ('t_acc_frac', '% cycle prop.',         'Fraction du cycle en acc positive'),
+    ('pos_pic_pct','Position pic (%)',      'À quel % du cycle le pic survient'),
+    ('jerk_rms',   'Jerk RMS (m/s³)',       'Irrégularité / fluidité du signal'),
+    ('fwhm_s',     'FWHM (s)',              'Durée du pic à mi-hauteur (largeur propulsion)'),
+    ('cadence',    'Cadence (cpm)',          'Fréquence de pagaie'),
+]
+
+PERF_COL = '#FFD600'   # jaune doré pour la colonne vitesse
+
+
+def style_ax_light(ax):
+    """Style pour fonds clairs — tout le texte en sombre."""
+    ax.set_facecolor('#FFFFFF')
+    ax.grid(True, color='#E0E0E0', linewidth=0.7, alpha=0.9)
+    ax.spines[['top', 'right']].set_visible(False)
+    ax.spines[['left', 'bottom']].set_color('#BDBDBD')
+    ax.tick_params(colors='#1A237E', labelsize=9, which='both')
+    ax.xaxis.label.set_color('#1A237E')
+    ax.yaxis.label.set_color('#1A237E')
+    ax.title.set_color('#0D2137')
+
+def style_fig_light(fig):
+    """Fond blanc pour les figures de l'onglet Performance."""
+    fig.patch.set_facecolor('#FFFFFF')
+
+
+def build_tab_performance(valid_names, filt_strokes, selected):
+    if len(valid_names) < 3:
+        st.warning('Il faut au moins 3 athlètes pour cette analyse.')
+        return
+
+    # ── Calcul du tableau athlètes × métriques ──────────────────────────────
+    rows = []
+    for name in valid_names:
+        strokes = filt_strokes.get(name, [])
+        if not strokes:
+            continue
+        df_s = to_df(strokes)
+        row  = {'Athlète': name}
+        row['v_moy (km/h)'] = round(df_s['speed_moy'].mean(), 3)
+        row['cadence']      = round(df_s['d_stroke'].apply(
+            lambda x: df_s['speed_moy'].mean() / x * (1000/3600) if x > 0 else np.nan
+        ).pipe(lambda _: df_s['speed_moy'].mean() / df_s['d_stroke'].mean() * (1000/3600)), 2)
+        # remplacer cadence calculée par la vraie cadence depuis duration
+        row['cadence'] = round(60 / df_s['duration'].mean(), 1)
+        for key, label, _ in ACC_METRICS:
+            if key == 'cadence':
+                row[key] = row['cadence']
+            elif key in df_s.columns:
+                row[key] = round(df_s[key].mean(), 4)
+            else:
+                row[key] = np.nan
+        # d_stroke ajouté explicitement (pas dans ACC_METRICS car tautologie avec v_moy)
+        row['d_stroke'] = round(df_s['d_stroke'].mean(), 4) if 'd_stroke' in df_s.columns else np.nan
+        rows.append(row)
+
+    if len(rows) < 3:
+        st.warning('Pas assez d\'athlètes avec des données.')
+        return
+
+    df_ath = pd.DataFrame(rows).sort_values('v_moy (km/h)', ascending=False).reset_index(drop=True)
+    df_ath.index = df_ath.index + 1  # rang 1, 2, 3...
+
+    v_arr   = df_ath['v_moy (km/h)'].values.astype(float)
+    names   = df_ath['Athlète'].values
+    n_ath   = len(names)
+    metric_keys = [k for k, _, _ in ACC_METRICS]
+
+    # ── SECTION 1 : Classement ───────────────────────────────────────────────
+    st.markdown('<div class="sh">① Classement général</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="note">Chaque ligne = moyenne sur l\'ensemble des coups de la sélection. '
+        'Trié par vitesse décroissante. La colonne vitesse est la variable à expliquer.</div>',
+        unsafe_allow_html=True
+    )
+
+    # Affichage stylisé
+    display_cols = ['Athlète', 'v_moy (km/h)'] + metric_keys
+    df_display   = df_ath[display_cols].copy()
+
+    # Colorier la colonne vitesse via gradient
+    def highlight_speed(s):
+        vmin, vmax = s.min(), s.max()
+        normed = (s - vmin) / (vmax - vmin + 1e-9)
+        styles = []
+        for v in normed:
+            g = int(50 + v * 150)
+            styles.append(f'background-color: rgba(21,101,192,{v*0.6:.2f}); color: white; font-weight: bold')
+        return styles
+
+    st.dataframe(
+        df_display.style.apply(highlight_speed, subset=['v_moy (km/h)']),
+        use_container_width=True, height=320
+    )
+
+    # ── SECTION 2 : Corrélations ─────────────────────────────────────────────
+    st.markdown('<div class="sh">② Corrélations avec la vitesse moyenne</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="note">'
+        '<b>Pearson</b> = corrélation linéaire. '
+        '<b>Spearman</b> = corrélation de rang (plus robuste aux outliers, ne suppose pas la linéarité). '
+        'Avec n=' + str(n_ath) + ' athlètes, un r > 0.75 correspond à p < 0.05 — '
+        'les barres d\'erreur sont larges, les tendances sont indicatives.'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    corr_rows = []
+    for key, label, desc in ACC_METRICS:
+        if key not in df_ath.columns:
+            continue
+        x = df_ath[key].values.astype(float)
+        mask = ~np.isnan(x) & ~np.isnan(v_arr)
+        if mask.sum() < 3:
+            continue
+        r_p, p_p = pearsonr(x[mask], v_arr[mask])
+        r_s, p_s = spearmanr(x[mask], v_arr[mask])
+        corr_rows.append({
+            'key': key, 'label': label, 'desc': desc,
+            'pearson': r_p, 'p_pearson': p_p,
+            'spearman': r_s, 'p_spearman': p_s,
+        })
+    if not corr_rows:
+        st.warning(
+            'Pas assez de données pour les corrélations. '
+            'Colonnes disponibles : ' + str(list(df_ath.columns))
+        )
+        return
+    df_corr = pd.DataFrame(corr_rows).sort_values('pearson', key=np.abs, ascending=False)
+
+    # Figure corrélations
+    fig_corr, axes = plt.subplots(1, 2, figsize=(14, 5))
+    style_fig_light(fig_corr)
+
+    for ax_i, (col, title) in enumerate(zip(['pearson', 'spearman'], ['Pearson r', 'Spearman ρ'])):
+        ax = axes[ax_i]; style_ax_light(ax)
+        vals  = df_corr[col].values
+        labs  = df_corr['label'].values
+        pvals = df_corr[f'p_{col}'].values
+        colors = [C_POS if v > 0 else C_NEG for v in vals]
+        bars  = ax.barh(range(len(vals)), vals, color=colors, alpha=0.82, edgecolor='#E0E0E0', lw=0.5)
+        # Significance stars
+        for j, (v, p) in enumerate(zip(vals, pvals)):
+            star = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else ''
+            x_pos = v + 0.03 * np.sign(v) if v != 0 else 0.03
+            ax.text(x_pos, j, star, va='center', ha='left' if v >= 0 else 'right',
+                    fontsize=9, color='#263238', fontweight='bold')
+            # Valeur
+            ax.text(-np.sign(v)*0.02, j, f'{v:.2f}', va='center',
+                    ha='right' if v >= 0 else 'left', fontsize=8, color='#37474F')
+        ax.set_yticks(range(len(labs)))
+        ax.set_yticklabels(labs, fontsize=9)
+        ax.axvline(0, color='#616161', lw=0.8)
+        ax.axvline(0.75, color='#546E7A', lw=0.8, ls=':', alpha=0.6)
+        ax.axvline(-0.75, color='#546E7A', lw=0.8, ls=':', alpha=0.6)
+        ax.set_xlim(-1.1, 1.1)
+        ax.set_xlabel('Corrélation avec v_moy', fontsize=10)
+        ax.set_title(title, fontsize=12, fontweight='bold')
+
+    plt.tight_layout()
+    st.pyplot(fig_corr)
+
+    # Heatmap inter-métriques
+    with st.expander('🔍 Heatmap des corrélations inter-métriques (redondances)'):
+        metric_cols = [k for k in metric_keys if k in df_ath.columns]
+        mat_corr = df_ath[metric_cols].astype(float).T.values
+        # Pearson entre métriques
+        n_m = len(metric_cols)
+        corr_mat = np.eye(n_m)
+        for i in range(n_m):
+            for j in range(i+1, n_m):
+                xi = mat_corr[i]; xj = mat_corr[j]
+                mask = ~np.isnan(xi) & ~np.isnan(xj)
+                if mask.sum() >= 3:
+                    r, _ = pearsonr(xi[mask], xj[mask])
+                    corr_mat[i, j] = corr_mat[j, i] = r
+
+        fig_hm, ax_hm = plt.subplots(figsize=(11, 9))
+        style_fig_light(fig_hm); style_ax_light(ax_hm)
+        im = ax_hm.imshow(corr_mat, cmap='RdBu_r', vmin=-1, vmax=1, aspect='auto')
+        plt.colorbar(im, ax=ax_hm, shrink=0.8, label='Pearson r')
+        labels_short = [l for _, l, _ in ACC_METRICS if _ or True]
+        labels_short = [next(l for k2, l, _ in ACC_METRICS if k2 == k) for k in metric_cols]
+        ax_hm.set_xticks(range(n_m)); ax_hm.set_xticklabels(labels_short, rotation=45, ha='right', fontsize=9)
+        ax_hm.set_yticks(range(n_m)); ax_hm.set_yticklabels(labels_short, fontsize=9)
+        for i in range(n_m):
+            for j in range(n_m):
+                ax_hm.text(j, i, f'{corr_mat[i,j]:.2f}', ha='center', va='center',
+                           fontsize=7.5, color='white' if abs(corr_mat[i,j]) > 0.55 else '#0D2137')
+        ax_hm.set_title('Corrélations entre métriques (Pearson)', fontsize=11, fontweight='bold')
+        plt.tight_layout()
+        st.pyplot(fig_hm)
+        st.markdown(
+            '<div class="note">Les paires très corrélées entre elles (|r| > 0.8) apportent '
+            'une information redondante. Ex : si AUC+ et pic_acc corrèlent à 0.95, '
+            'ils mesurent essentiellement la même chose.</div>',
+            unsafe_allow_html=True
+        )
+
+    # ── SECTION 3 : Scatter grid ─────────────────────────────────────────────
+    st.markdown('<div class="sh">③ Scatter plots — v_moy vs chaque métrique</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="note">Chaque point = un athlète. '
+        'Droite de régression OLS. R² et p-value indiqués. '
+        'Les athlètes sont colorés selon leur rang de vitesse (bleu foncé = plus rapide).</div>',
+        unsafe_allow_html=True
+    )
+
+    valid_metrics = [(k, l, d) for k, l, d in ACC_METRICS if k in df_ath.columns
+                     and not df_ath[k].isna().all()]
+    n_cols = 3
+    n_rows = int(np.ceil(len(valid_metrics) / n_cols))
+    fig_sc, axes_sc = plt.subplots(n_rows, n_cols, figsize=(14, n_rows * 4))
+    style_fig_light(fig_sc)
+    axes_flat = axes_sc.flatten() if n_rows > 1 else axes_sc
+
+    speed_norm = Normalize(vmin=v_arr.min(), vmax=v_arr.max())
+    cmap_speed = plt.cm.plasma
+
+    for idx_m, (key, label, desc) in enumerate(valid_metrics):
+        ax = axes_flat[idx_m]; style_ax_light(ax)
+        x  = df_ath[key].values.astype(float)
+        mask = ~np.isnan(x)
+        xm, ym, nm = x[mask], v_arr[mask], names[mask]
+
+        # Scatter
+        for xi, yi, ni in zip(xm, ym, nm):
+            c = cmap_speed(speed_norm(yi))
+            ax.scatter(xi, yi, color=c, s=110, zorder=4, edgecolors='white', linewidths=0.8)
+            ax.annotate(ni.split('_')[1] if '_' in ni else ni.split()[0],
+                        (xi, yi), textcoords='offset points', xytext=(5, 4),
+                        fontsize=7.5, color='#0D2137', fontweight='bold')
+
+        # Régression
+        if len(xm) >= 3:
+            coeffs = np.polyfit(xm, ym, 1)
+            x_line = np.linspace(xm.min(), xm.max(), 100)
+            ax.plot(x_line, np.polyval(coeffs, x_line),
+                    color=C_MEAN, lw=1.8, ls='--', alpha=0.8, zorder=3)
+            r, p = pearsonr(xm, ym)
+            r2 = r**2
+            sig = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'n.s.'
+            ax.text(0.97, 0.97, f'R²={r2:.2f}  {sig}',
+                    transform=ax.transAxes, fontsize=8, va='top', ha='right',
+                    color='white',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor=C_MEAN, alpha=0.85))
+
+        ax.set_xlabel(label, fontsize=9)
+        ax.set_ylabel('v_moy (km/h)', fontsize=9)
+        ax.set_title(desc, fontsize=8.5, fontstyle='italic', pad=4)
+
+    # Masquer les axes vides
+    for idx_m in range(len(valid_metrics), len(axes_flat)):
+        axes_flat[idx_m].set_visible(False)
+
+    plt.tight_layout()
+    st.pyplot(fig_sc)
+
+    # ── SECTION 4 : Cadence vs d_stroke ──────────────────────────────────────
+    st.markdown('<div class="sh">④ Stratégie de vitesse — Cadence vs Distance par coup</div>',
+                unsafe_allow_html=True)
+    st.markdown(
+        '<div class="note">'
+        '<b>v_moy = cadence × d_stroke / 60 × (1000/3600)</b> — c\'est une identité mathématique. '
+        'Ce graphique pose la question : <b>qui va vite parce qu\'il pagaie vite, '
+        'et qui va vite parce qu\'il avance loin à chaque coup ?</b> '
+        'Les deux axes sont indépendants de v_moy et apportent une vraie information stratégique.'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    fig_strat, ax_st = plt.subplots(figsize=(9, 6))
+    style_fig_light(fig_strat); style_ax_light(ax_st)
+
+    cad_arr   = df_ath['cadence'].values.astype(float)
+    dst_arr   = df_ath['d_stroke'].values.astype(float)
+
+    for i, (xi, yi, ni, vi) in enumerate(zip(cad_arr, dst_arr, names, v_arr)):
+        c = cmap_speed(speed_norm(vi))
+        ax_st.scatter(xi, yi, color=c, s=200, zorder=4, edgecolors='white', linewidths=1.2)
+        ax_st.annotate(ni.split('_')[1] if '_' in ni else ni.split()[0],
+                       (xi, yi), textcoords='offset points', xytext=(8, 5),
+                       fontsize=9.5, fontweight='bold', color='#0D2137')
+
+    # Lignes iso-vitesse (hyperboles v = cad * d / 60 * 1000/3600)
+    cad_range = np.linspace(cad_arr.min() * 0.9, cad_arr.max() * 1.1, 300)
+    for v_iso in np.arange(np.floor(v_arr.min() - 0.5), np.ceil(v_arr.max() + 1), 0.5):
+        d_iso = v_iso * 3600 / 1000 * 60 / cad_range
+        mask_iso = (d_iso > 0) & (d_iso < dst_arr.max() * 1.5) & (d_iso > dst_arr.min() * 0.5)
+        if mask_iso.sum() > 10:
+            ax_st.plot(cad_range[mask_iso], d_iso[mask_iso],
+                       color='#616161', lw=0.7, ls=':', alpha=0.5)
+            mid = mask_iso.sum() // 2
+            ax_st.text(cad_range[mask_iso][mid], d_iso[mask_iso][mid],
+                       f'{v_iso:.1f}', fontsize=7, color='#888888', alpha=0.8,
+                       ha='center', va='bottom')
+
+    ax_st.set_xlabel('Cadence (cpm)', fontsize=11)
+    ax_st.set_ylabel('Distance par coup (m)', fontsize=11)
+    ax_st.set_title('Stratégie de vitesse : Cadence vs Amplitude\n(lignes pointillées = iso-vitesse en km/h)',
+                    fontsize=12, fontweight='bold')
+
+    sm = ScalarMappable(cmap=cmap_speed, norm=speed_norm)
+    sm.set_array([])
+    plt.colorbar(sm, ax=ax_st, label='v_moy (km/h)', shrink=0.8)
+    plt.tight_layout()
+    st.pyplot(fig_strat)
+
+    # d_stroke vs AUC+ : est-ce que la force prédit l'amplitude ?
+    with st.expander('🔍 La force (AUC+) prédit-elle l\'amplitude par coup ?'):
+        fig_fa, ax_fa = plt.subplots(figsize=(8, 5))
+        style_fig_light(fig_fa); style_ax_light(ax_fa)
+        auc_pos_arr = df_ath['auc_pos'].values.astype(float)
+        mask_fa = ~np.isnan(auc_pos_arr) & ~np.isnan(dst_arr)
+        for xi, yi, ni, vi in zip(auc_pos_arr[mask_fa], dst_arr[mask_fa],
+                                   names[mask_fa], v_arr[mask_fa]):
+            c = cmap_speed(speed_norm(vi))
+            ax_fa.scatter(xi, yi, color=c, s=150, zorder=4, edgecolors='white', lw=1)
+            ax_fa.annotate(ni.split('_')[1] if '_' in ni else ni.split()[0],
+                           (xi, yi), xytext=(5, 4), textcoords='offset points',
+                           fontsize=9, color='#0D2137', fontweight='bold')
+        if mask_fa.sum() >= 3:
+            coeffs = np.polyfit(auc_pos_arr[mask_fa], dst_arr[mask_fa], 1)
+            xr = np.linspace(auc_pos_arr[mask_fa].min(), auc_pos_arr[mask_fa].max(), 100)
+            ax_fa.plot(xr, np.polyval(coeffs, xr), color=C_MEAN, lw=2, ls='--')
+            r, p = pearsonr(auc_pos_arr[mask_fa], dst_arr[mask_fa])
+            sig = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'n.s.'
+            ax_fa.text(0.97, 0.97, f'R²={r**2:.2f}  {sig}',
+                       transform=ax_fa.transAxes, fontsize=10, va='top', ha='right',
+                       color='white',
+                       bbox=dict(boxstyle='round,pad=0.3', facecolor=C_MEAN, alpha=0.7))
+        ax_fa.set_xlabel('AUC+ — impulsion propulsive (m/s)', fontsize=11)
+        ax_fa.set_ylabel('Distance par coup (m)', fontsize=11)
+        ax_fa.set_title('AUC+ vs d_stroke : la force prédit-elle l\'amplitude ?',
+                        fontsize=11, fontweight='bold')
+        plt.tight_layout()
+        st.pyplot(fig_fa)
+        st.markdown(
+            '<div class="note">Si R² est faible : l\'amplitude dépend d\'autre chose que de la force '
+            '(hydrodynamique, technique de sortie, trajectoire). '
+            'Si R² est fort : plus on pousse fort, plus on avance loin.</div>',
+            unsafe_allow_html=True
+        )
+
+    # ── SECTION 5 : Analyse avancée ──────────────────────────────────────────
+    st.markdown('<div class="sh">⑤ Analyse avancée — Leave-one-out & Profil radar</div>',
+                unsafe_allow_html=True)
+    st.markdown(
+        '<div class="note">'
+        'Avec n=' + str(n_ath) + ' athlètes, toute régression multiple overfite immédiatement. '
+        'On utilise une approche <b>Leave-One-Out</b> : pour chaque métrique, on prédit '
+        'le rang de vitesse de chaque athlète en s\'entraînant sur les n-1 autres. '
+        'Le score = corrélation moyenne entre rang prédit et rang réel.'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    # LOO ranking
+    loo_rows = []
+    ranks_real = np.argsort(np.argsort(-v_arr)).astype(float)  # 0 = plus rapide
+    for key, label, desc in ACC_METRICS:
+        if key not in df_ath.columns:
+            continue
+        x = df_ath[key].values.astype(float)
+        mask = ~np.isnan(x)
+        if mask.sum() < 3:
+            continue
+        preds = np.full(n_ath, np.nan)
+        for i in range(n_ath):
+            if not mask[i]:
+                continue
+            idx_train = [j for j in range(n_ath) if j != i and mask[j]]
+            if len(idx_train) < 3:
+                continue
+            x_tr = x[idx_train]; v_tr = v_arr[idx_train]
+            c = np.polyfit(x_tr, v_tr, 1)
+            preds[i] = np.polyval(c, x[i])
+        valid_pred = ~np.isnan(preds)
+        if valid_pred.sum() >= 3:
+            r_loo, p_loo = pearsonr(preds[valid_pred], v_arr[valid_pred])
+            loo_rows.append({'key': key, 'label': label, 'r_loo': r_loo, 'p_loo': p_loo})
+
+    if loo_rows:
+        df_loo = pd.DataFrame(loo_rows).sort_values('r_loo', key=np.abs, ascending=False)
+        fig_loo, ax_loo = plt.subplots(figsize=(9, 5))
+        style_fig_light(fig_loo); style_ax_light(ax_loo)
+        vals_loo = df_loo['r_loo'].values
+        labs_loo = df_loo['label'].values
+        pvals_loo = df_loo['p_loo'].values
+        colors_loo = [C_POS if v > 0 else C_NEG for v in vals_loo]
+        ax_loo.barh(range(len(vals_loo)), vals_loo, color=colors_loo, alpha=0.82,
+                    edgecolor='#E0E0E0', lw=0.5)
+        for j, (v, p) in enumerate(zip(vals_loo, pvals_loo)):
+            star = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'n.s.'
+            ax_loo.text(v + 0.02*np.sign(v), j, f'{v:.2f} {star}',
+                        va='center', ha='left' if v >= 0 else 'right',
+                        fontsize=8.5, color='#263238')
+        ax_loo.set_yticks(range(len(labs_loo)))
+        ax_loo.set_yticklabels(labs_loo, fontsize=9)
+        ax_loo.axvline(0, color='#616161', lw=0.8)
+        ax_loo.set_xlim(-1.1, 1.3)
+        ax_loo.set_xlabel('r LOO (prédiction croisée du rang)', fontsize=10)
+        ax_loo.set_title('Leave-One-Out — quelle métrique prédit le mieux la vitesse ?',
+                         fontsize=11, fontweight='bold')
+        plt.tight_layout()
+        st.pyplot(fig_loo)
+
+    # Profil radar : plus rapide vs plus lent vs Clement
+    st.markdown('<div class="sh">Profil radar — comparaison des extrêmes</div>',
+                unsafe_allow_html=True)
+
+    radar_keys = [k for k, _, _ in ACC_METRICS
+                  if k in df_ath.columns and not df_ath[k].isna().all()
+                  and k != 'cadence']
+    radar_labels = [next(l for k2, l, _ in ACC_METRICS if k2 == k) for k in radar_keys]
+
+    # Normaliser 0-1 pour le radar
+    radar_df = df_ath.set_index('Athlète')[radar_keys].astype(float)
+    radar_norm = (radar_df - radar_df.min()) / (radar_df.max() - radar_df.min() + 1e-9)
+
+    # Athlètes à afficher : 1er, dernier + Clement si présent
+    fastest = df_ath.iloc[0]['Athlète']
+    slowest = df_ath.iloc[-1]['Athlète']
+    clement_name = next((n for n in names if 'zappaterra' in n.lower() or 'clement' in n.lower()), None)
+    radar_athletes = list(dict.fromkeys([fastest, slowest] + ([clement_name] if clement_name else [])))
+
+    N = len(radar_keys)
+    angles = np.linspace(0, 2*np.pi, N, endpoint=False).tolist()
+    angles += angles[:1]
+
+    fig_rad, ax_rad = plt.subplots(figsize=(8, 8), subplot_kw=dict(polar=True))
+    style_fig_light(fig_rad)
+    ax_rad.set_facecolor('#FAFAFA')
+    ax_rad.spines['polar'].set_color('#BDBDBD')
+    ax_rad.tick_params(colors='#263238', labelsize=9)
+    ax_rad.set_thetagrids(np.degrees(angles[:-1]), radar_labels, fontsize=9, color='#263238')
+    ax_rad.yaxis.set_tick_params(colors='#263238')
+    ax_rad.set_ylim(0, 1)
+    ax_rad.grid(color='#BDBDBD', alpha=0.5)
+
+    radar_colors = [C_POS, C_NEG, PERF_COL]
+    for i, ath in enumerate(radar_athletes):
+        if ath not in radar_norm.index:
+            continue
+        vals_r = radar_norm.loc[ath, radar_keys].values.tolist()
+        vals_r += vals_r[:1]
+        rank_v = df_ath[df_ath['Athlète'] == ath].index[0]
+        label_r = '{} (rang {}, {:.2f} km/h)'.format(
+            ath.split('_')[1] if '_' in ath else ath.split()[0],
+            rank_v,
+            df_ath[df_ath['Athlète'] == ath]['v_moy (km/h)'].values[0]
+        )
+        color_r = radar_colors[i % len(radar_colors)]
+        ax_rad.plot(angles, vals_r, color=color_r, lw=2.5, label=label_r)
+        ax_rad.fill(angles, vals_r, color=color_r, alpha=0.10)
+
+    ax_rad.legend(loc='upper right', bbox_to_anchor=(1.35, 1.15),
+                  fontsize=9, framealpha=0.7)
+    ax_rad.set_title('Profil radar normalisé\n(0 = min groupe, 1 = max groupe)',
+                     fontsize=11, fontweight='bold', color='#263238', pad=20)
+    st.pyplot(fig_rad)
+
+    st.markdown(
+        '<div class="note">'
+        '<b>Comment lire ce radar :</b> les valeurs sont normalisées au sein du groupe — '
+        '1 = meilleur du groupe sur cette métrique, 0 = moins bon. '
+        'Ce n\'est pas une valeur absolue. L\'objectif est de voir '
+        'si le profil du plus rapide est systématiquement "plus grand" que celui du plus lent, '
+        'ou si certaines métriques vont dans le sens contraire.'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # APP STREAMLIT
 # ─────────────────────────────────────────────────────────────────────────────
@@ -590,13 +1577,75 @@ def fig_distribution(strokes_dict, metric, name_list):
 st.set_page_config(page_title='Pagaie Sprint — FFCK', page_icon='🛶',
                    layout='wide', initial_sidebar_state='expanded')
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUTHENTIFICATION
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Credentials : définis dans .streamlit/secrets.toml ou variables d'environnement
+# secrets.toml :  [auth]
+#                 users = {coach1 = "mdp1", coach2 = "mdp2"}
+def _get_users():
+    try:
+        return dict(st.secrets["auth"]["users"])
+    except Exception:
+        pass
+    # Fallback : variable d'environnement AUTH_USERS="user1:pwd1,user2:pwd2"
+    raw = os.environ.get("AUTH_USERS", "")
+    if raw:
+        users = {}
+        for pair in raw.split(","):
+            if ":" in pair:
+                u, p = pair.split(":", 1)
+                users[u.strip()] = p.strip()
+        return users
+    # Valeur par défaut (à changer avant déploiement)
+    return {"coach": "ffck2026", "admin": "phyling2026"}
+
+def check_login():
+    """Affiche la page de login si non authentifié. Retourne True si connecté."""
+    if st.session_state.get("authenticated"):
+        return True
+
+    st.markdown("""
+<style>
+.login-box{max-width:380px;margin:80px auto;background:#1a2332;border-radius:16px;
+           padding:40px 36px;border:1px solid #2d3f55;box-shadow:0 8px 32px rgba(0,0,0,0.4)}
+.login-title{font-size:1.5rem;font-weight:700;color:#FFFFFF;text-align:center;margin-bottom:4px}
+.login-sub{font-size:0.85rem;color:#90A4AE;text-align:center;margin-bottom:28px}
+</style>""", unsafe_allow_html=True)
+
+    col_l, col_c, col_r = st.columns([1, 2, 1])
+    with col_c:
+        st.markdown('<div class="login-box">', unsafe_allow_html=True)
+        st.markdown('<div class="login-title">🛶 Sprint Kayak</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-sub">Analyse Maxi-Phyling · FFCK</div>', unsafe_allow_html=True)
+
+        username = st.text_input("Identifiant", key="login_user", placeholder="Votre identifiant")
+        password = st.text_input("Mot de passe", type="password", key="login_pwd", placeholder="••••••••")
+
+        if st.button("Connexion", use_container_width=True, type="primary"):
+            users = _get_users()
+            if username in users and users[username] == password:
+                st.session_state["authenticated"] = True
+                st.session_state["username"] = username
+                st.rerun()
+            else:
+                st.error("Identifiant ou mot de passe incorrect.")
+
+        st.markdown('</div>', unsafe_allow_html=True)
+    return False
+
+if not check_login():
+    st.stop()
+
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=DM+Mono:wght@400;500&display=swap');
 html,body,[class*="css"]{font-family:'DM Sans',sans-serif;}
-.app-title{font-size:1.9rem;font-weight:700;color:#0d2137;letter-spacing:-0.5px;}
-.app-sub{font-size:0.88rem;color:#546e7a;margin-bottom:1.2rem;}
-.sh{font-size:1.05rem;font-weight:700;color:#0d2137;margin:1.2rem 0 0.4rem;
+.app-title{font-size:1.9rem;font-weight:700;color:#FFFFFF;letter-spacing:-0.5px;}
+.app-sub{font-size:0.88rem;color:#AAAAAA;margin-bottom:1.2rem;}
+.sh{font-size:1.05rem;font-weight:700;color:#FFFFFF;margin:1.2rem 0 0.4rem;
     border-left:3px solid #1976D2;padding-left:10px;}
 .note{background:#e8f4fd;border-left:3px solid #1976D2;border-radius:0 8px 8px 0;
       padding:9px 13px;font-size:0.84rem;color:#0d2137;margin:0.5rem 0;}
@@ -610,13 +1659,66 @@ html,body,[class*="css"]{font-family:'DM Sans',sans-serif;}
 # ── SIDEBAR ──────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown('## 🛶 Sprint Canoë-Kayak')
+    uname = st.session_state.get('username', '')
+    if uname:
+        st.caption(f'Connecté : {uname}')
+    if st.button('Déconnexion', use_container_width=True):
+        st.session_state['authenticated'] = False
+        st.rerun()
     st.caption('Analyse des coups de pagaie · Maxi-Phyling')
     st.divider()
 
     st.markdown('**Athlètes**')
-    all_names = list(ATHLETES_FILES.keys())
-    selected  = st.multiselect('Sélectionner', all_names, default=all_names[:3])
-    distance  = st.selectbox('Épreuve', ['250m', '2000m'])
+    # Chargement dynamique depuis registre.csv + scan du dossier data/
+    df_registre = load_registre()
+    all_athletes = get_athletes_list(df_registre)
+
+    # Stats registre
+    n_sessions = len(df_registre)
+    n_athletes = len(all_athletes)
+    st.caption('{} session(s) · {} athlète(s)'.format(n_sessions, n_athletes))
+
+    # ── 1. Sélection des athlètes ─────────────────────────────────────────────
+    st.markdown('**Athlètes**')
+    selected = st.multiselect(
+        'Sélectionner',
+        all_athletes,
+        default=all_athletes[:min(3, len(all_athletes))]
+    )
+
+    # ── 2. Épreuve ────────────────────────────────────────────────────────────
+    st.markdown('**Épreuve**')
+    all_distances = sorted(df_registre['distance'].dropna().unique().tolist()) if not df_registre.empty else ['250m']
+    distance = st.selectbox('Distance', all_distances, label_visibility='collapsed')
+
+    # ── 3. Sessions par athlète ───────────────────────────────────────────────
+    st.markdown('**Sessions**')
+    ATHLETES_FILES = {}   # {display_name: fichier}
+    session_labels = {}   # {display_name: label affiché}
+
+    for ath in selected:
+        sessions = get_sessions_for_athlete(df_registre, ath, distance)
+        if not sessions:
+            st.caption('  {} — aucune session {}'.format(ath, distance))
+            continue
+        options = [s['label'] for s in sessions]
+        if len(sessions) == 1:
+            chosen_label = st.selectbox(
+                ath.split()[0],
+                options,
+                index=0,
+                key='sess_' + ath,
+                disabled=True
+            )
+        else:
+            chosen_label = st.selectbox(
+                ath.split()[0],
+                options,
+                key='sess_' + ath
+            )
+        chosen = next(s for s in sessions if s['label'] == chosen_label)
+        ATHLETES_FILES[ath] = chosen['fichier']
+        session_labels[ath] = chosen['label']
 
     st.divider()
     st.markdown('**Filtres**')
@@ -641,8 +1743,7 @@ with st.sidebar:
     t_start = st.slider('Début zoom (s)', 0.0, 120.0, 3.0, 0.5)
     t_dur   = st.slider('Durée fenêtre (s)', 2.0, 15.0, 5.0, 0.5)
 
-    st.markdown('**Évolution temporelle**')
-    roll_w = st.slider('Moy. glissante (coups)', 3, 40, 15)
+    roll_w = 15  # valeur fixe (paramètre interne)
 
     # Paramètres détection avec aide détaillée
     with st.expander('⚙️ Détection avancée  ℹ️'):
@@ -660,8 +1761,8 @@ with st.sidebar:
 | Métrique | Signification |
 |---|---|
 | AUC+ | Impulsion propulsion |
-| \|AUC-\| | Impulsion freinage |
-| Sym ratio | \|AUC-\|/AUC+ (idéal < 0.7) |
+| abs(AUC-) | Impulsion freinage |
+| Sym ratio | abs(AUC-)/AUC+ (idéal < 0.7) |
 | RFD | Explosivité catch |
 | Jerk | Fluidité coup |
 | Pos. pic | Timing propulsion |
@@ -673,17 +1774,35 @@ if not selected:
     st.warning('Sélectionnez au moins un athlète.')
     st.stop()
 
+# Seuls les athlètes avec une session disponible sont chargés
+_selected_with_file = [n for n in selected if n in ATHLETES_FILES]
+
 raw_strokes, raw_signals = {}, {}
-with st.spinner('Chargement et détection des coups…'):
-    for name in selected:
-        fname = ATHLETES_FILES[name].get(distance, '')
+_cache_hits = 0
+with st.spinner('Chargement des données…'):
+    for name in _selected_with_file:
+        fname = ATHLETES_FILES.get(name, '')
         fpath = os.path.join(DATA_DIR, fname) if fname else ''
         if fname and os.path.exists(fpath):
-            s, sig = load_and_detect(fname, fc, md, mh)
+            cp = _cache_path(fname, fc, md, mh)
+            _from_cache = (os.path.exists(cp) and
+                           os.path.getmtime(cp) >= os.path.getmtime(fpath))
+            if _from_cache:
+                _cache_hits += 1
+            s, sig = load_with_cache(fname, fc, md, mh)
             raw_strokes[name]=s; raw_signals[name]=sig
         else:
             raw_strokes[name]=[]; raw_signals[name]={}
-            st.warning(f'Fichier {distance} introuvable : {name}')
+            st.warning('Fichier introuvable : {} — vérifiez registre.csv'.format(fname))
+
+# Remplacer selected par la liste effective
+selected = _selected_with_file
+
+if len(selected) > 0:
+    if _cache_hits == len(selected):
+        st.sidebar.caption('⚡ Cache — chargement instantané')
+    elif _cache_hits > 0:
+        st.sidebar.caption('⚡ {}/{} depuis le cache'.format(_cache_hits, len(selected)))
 
 filt_strokes = {n: apply_filters(raw_strokes[n], d_range, s_lo, s_hi) for n in selected}
 valid_names  = [n for n in selected if filt_strokes.get(n)]
@@ -697,11 +1816,10 @@ st.markdown(f'<div class="app-sub">Méthode : creux locaux · {distance} · '
 
 
 # ── ONGLETS ───────────────────────────────────────────────────────────────────
-t1, t2, t3, t4 = st.tabs([
+t1, t2, t3 = st.tabs([
     '① Signal',
     '② Analyse individuelle',
     '③ Comparaison',
-    '④ Métriques',
 ])
 
 
@@ -730,19 +1848,82 @@ with t1:
     if valid_names:
         st.markdown('<div class="sh">Indicateurs de synthèse</div>',
                     unsafe_allow_html=True)
-        KPI = [('auc_pos','AUC+ (m/s)','{:.4f}'),('auc_neg','|AUC-| (m/s)','{:.4f}'),
-               ('sym_ratio','Sym ratio','{:.3f}'),('rfd','RFD (m/s³)','{:.2f}'),
-               ('jerk_rms','Jerk RMS','{:.1f}'),('duration','Durée (s)','{:.3f}')]
+
+        # Métriques affichées : (colonne_df, label, format, higher_is_better)
+        KPI = [
+            ('auc_pos',   'AUC+',        '{:.4f}', True),
+            ('auc_neg',   '|AUC-|',      '{:.4f}', False),   # moins de freinage = mieux
+            ('sym_ratio', 'Sym ratio',   '{:.3f}', False),   # plus bas = mieux
+            ('rfd',       'RFD',         '{:.2f}', True),
+            ('jerk_rms',  'Jerk RMS',    '{:.1f}', False),
+            ('duration',  'Durée coup',  '{:.3f}', False),
+        ]
+
+        # Calculer les moyennes par athlète pour chaque métrique + vitesse
+        kpi_data = {}
         for name in valid_names:
             df_s = to_df(filt_strokes[name])
-            st.markdown(f'**{name}** &nbsp; `{len(df_s)} coups`')
+            row = {m: df_s[m].mean() for m, *_ in KPI if m in df_s.columns}
+            # Vitesse moyenne depuis raw_signals
+            raw = raw_signals.get(name, {})
+            if raw and 'speed' in raw:
+                spd = np.array(raw['speed'])
+                spd = spd[np.isfinite(spd) & (spd > 0)]
+                row['v_moy'] = float(spd.mean()) if len(spd) > 0 else np.nan
+            else:
+                row['v_moy'] = np.nan
+            kpi_data[name] = row
+
+        # Identifier le meilleur par colonne
+        def best_athlete(metric, higher_is_better):
+            vals = {n: kpi_data[n].get(metric, np.nan) for n in valid_names}
+            vals = {n: v for n, v in vals.items() if np.isfinite(v)}
+            if not vals:
+                return None
+            return max(vals, key=vals.get) if higher_is_better else min(vals, key=vals.get)
+
+        best_speed = best_athlete('v_moy', True)
+        best_per_kpi = {m: best_athlete(m, hib) for m, _, _, hib in KPI}
+
+        # CSS cartes
+        CARD_BEST = ('background:#1B5E20;border:2px solid #43A047;'
+                     'border-radius:10px;padding:12px 16px;text-align:center;')
+        CARD_NORM = ('background:#f0f4f8;border:1px solid #dde3ea;'
+                     'border-radius:10px;padding:12px 16px;text-align:center;')
+        LBL_BEST  = 'font-size:0.70rem;color:#A5D6A7;text-transform:uppercase;letter-spacing:0.05em;'
+        LBL_NORM  = 'font-size:0.70rem;color:#78909c;text-transform:uppercase;letter-spacing:0.05em;'
+        VAL_BEST  = 'font-size:1.4rem;font-weight:700;color:#FFFFFF;font-family:"DM Mono",monospace;'
+        VAL_NORM  = 'font-size:1.4rem;font-weight:700;color:#0d2137;font-family:"DM Mono",monospace;'
+        CROWN     = ' 👑'
+
+        for name in valid_names:
+            df_s      = to_df(filt_strokes[name])
+            v_moy_val = kpi_data[name].get('v_moy', np.nan)
+            v_str     = '{:.1f} km/h'.format(v_moy_val) if np.isfinite(v_moy_val) else '—'
+            is_fastest = (name == best_speed)
+            speed_badge = (' 🥇' if is_fastest else '')
+
+            st.markdown(
+                f'**{name}**&nbsp; `{len(df_s)} coups` &nbsp;'
+                f'<span style="background:#E3F2FD;border-radius:6px;padding:2px 8px;'
+                f'font-size:0.85rem;color:#0D47A1;font-weight:600">'
+                f'⚡ {v_str}{speed_badge}</span>',
+                unsafe_allow_html=True)
+
             cols = st.columns(len(KPI))
-            for col,(m,lbl,fmt) in zip(cols,KPI):
-                v = df_s[m].mean()
+            for col, (m, lbl, fmt, hib) in zip(cols, KPI):
+                v = kpi_data[name].get(m, np.nan)
                 if np.isfinite(v):
+                    is_best = (name == best_per_kpi.get(m))
+                    card = CARD_BEST if is_best else CARD_NORM
+                    lbl_s = LBL_BEST if is_best else LBL_NORM
+                    val_s = VAL_BEST if is_best else VAL_NORM
+                    suffix = CROWN if is_best else ''
                     col.markdown(
-                        f'<div class="kpi-card"><div class="kpi-lbl">{lbl}</div>'
-                        f'<div class="kpi-val">{fmt.format(v)}</div></div>',
+                        f'<div style="{card}">'
+                        f'<div style="{lbl_s}">{lbl}</div>'
+                        f'<div style="{val_s}">{fmt.format(v)}{suffix}</div>'
+                        f'</div>',
                         unsafe_allow_html=True)
             st.write('')
 
@@ -827,99 +2008,13 @@ with t3:
                     unsafe_allow_html=True)
         st.pyplot(fig_quarts_multi(filt_strokes, valid_names))
 
-        # 3. Évolution des métriques
-        st.markdown('<div class="sh">3 · Évolution des métriques au fil de la distance</div>',
-                    unsafe_allow_html=True)
-        metrics_sel = st.multiselect(
-            'Métriques',
-            options=list(METRIC_META.keys()),
-            default=['auc_pos','sym_ratio','rfd'],
-            format_func=lambda x: METRIC_META[x][1],
-            key='cmp_metrics'
-        )
-        for m in metrics_sel:
-            st.pyplot(fig_evolution(filt_strokes, m, valid_names, roll_w))
-            st.write('')
+        # Sections 3 à 8 — masquées (à activer progressivement)
 
-        # 4. Scatter
-        st.markdown('<div class="sh">4 · Relation propulsion / autre métrique</div>',
-                    unsafe_allow_html=True)
-        scatter_y = st.selectbox(
-            'Axe Y',
-            ['auc_neg','sym_ratio','rfd','jerk_rms','pos_pic_pct'],
-            format_func=lambda x: METRIC_META[x][1], key='sc_y')
-        st.pyplot(fig_scatter(filt_strokes, valid_names, scatter_y))
-
-        # 5. Similarité
-        st.markdown('<div class="sh">5 · Similarité entre athlètes</div>',
-                    unsafe_allow_html=True)
-        st.markdown('<div class="note">Branches proches = athlètes similaires · '
-                    'Gauche = forme du coup · Droite = métriques de puissance et timing</div>',
-                    unsafe_allow_html=True)
-        st.pyplot(fig_dendrogrammes(filt_strokes, valid_names))
-
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.markdown('**Corrélation des profils moyens**')
-            st.markdown('<div class="note">Échelle adaptée aux valeurs observées — '
-                        'les différences subtiles entre athlètes sont ainsi visibles.</div>',
-                        unsafe_allow_html=True)
-            st.pyplot(fig_matrice(filt_strokes, valid_names))
-        with col_b:
-            st.markdown('**Distributions comparées**')
-            dm = st.selectbox('Métrique', list(METRIC_META.keys()),
-                              format_func=lambda x: METRIC_META[x][0], key='dm4')
-            st.pyplot(fig_distribution(filt_strokes, dm, valid_names))
+# ④ MÉTRIQUES — masqué (à activer ultérieurement)
+# ⑤ VUE TEMPORELLE — masqué (à activer ultérieurement)
+# ══ ⑤ VUE TEMPORELLE ════════════════════════════════════════════════════════
+with t5:
+    build_tab_temporel(valid_names, filt_strokes, raw_signals, selected, roll_w)
 
 
-# ══ ④ MÉTRIQUES ══════════════════════════════════════════════════════════════
-with t4:
-    if not valid_names:
-        st.info('Aucun coup disponible.')
-    else:
-        st.markdown('<div class="sh">Métriques principales</div>', unsafe_allow_html=True)
-        rows1 = []
-        for name in valid_names:
-            df_s = to_df(filt_strokes[name])
-            def f(col, d=4): return f'{df_s[col].mean():.{d}f} ± {df_s[col].std():.{d}f}'
-            rows1.append({'Athlète':name,'N coups':len(df_s),
-                          'AUC+ (m/s)':f('auc_pos'),'|AUC-| (m/s)':f('auc_neg'),
-                          'Sym ratio':f('sym_ratio',3),'Durée (s)':f('duration',3),
-                          'Dist/coup (m)':f('d_stroke',2),
-                          '% prop.':f"{df_s['t_acc_frac'].mean()*100:.1f}%"})
-        st.dataframe(pd.DataFrame(rows1).set_index('Athlète'), use_container_width=True)
-
-        st.markdown('<div class="sh">Métriques avancées</div>', unsafe_allow_html=True)
-        st.caption('RFD = explosivité catch · Jerk = fluidité · FWHM = durée propulsion intense · CV = consistance')
-        rows2 = []
-        for name in valid_names:
-            df_s = to_df(filt_strokes[name])
-            def f(col, d=2): return f'{df_s[col].mean():.{d}f} ± {df_s[col].std():.{d}f}'
-            cv_a = df_s['auc_pos'].std()/df_s['auc_pos'].mean()*100
-            cv_j = df_s['jerk_rms'].std()/df_s['jerk_rms'].mean()*100
-            rows2.append({'Athlète':name,'RFD (m/s³)':f('rfd'),
-                          'Jerk RMS':f('jerk_rms',1),
-                          'Position pic (%)':f('pos_pic_pct',1),
-                          'FWHM (ms)':f'{df_s["fwhm_s"].mean()*1000:.0f} ± {df_s["fwhm_s"].std()*1000:.0f}',
-                          'Sym ratio':f('sym_ratio',3),
-                          'CV AUC+':f'{cv_a:.1f}%','CV Jerk':f'{cv_j:.1f}%'})
-        st.dataframe(pd.DataFrame(rows2).set_index('Athlète'), use_container_width=True)
-
-        st.markdown('<div class="sh">Distributions</div>', unsafe_allow_html=True)
-        dm5 = st.selectbox('Métrique', list(METRIC_META.keys()),
-                           format_func=lambda x: METRIC_META[x][0], key='dm5')
-        st.pyplot(fig_distribution(filt_strokes, dm5, valid_names))
-
-        st.markdown('<div class="sh">Export CSV</div>', unsafe_allow_html=True)
-        all_rows = []
-        for name in valid_names:
-            df_s = to_df(filt_strokes[name]); df_s.insert(0,'athlete',name)
-            all_rows.append(df_s)
-        if all_rows:
-            df_exp = pd.concat(all_rows, ignore_index=True)
-            st.download_button(
-                '⬇️ Télécharger les données (CSV)',
-                data=df_exp.to_csv(index=False).encode('utf-8'),
-                file_name=f'pagaie_creux_{distance}.csv',
-                mime='text/csv')
-            st.caption(f'{len(df_exp)} coups · {len(df_exp.columns)-1} métriques par coup')
+# ⑥ PERFORMANCE — masqué (à activer ultérieurement)
