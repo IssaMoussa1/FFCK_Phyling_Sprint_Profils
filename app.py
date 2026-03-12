@@ -2015,6 +2015,20 @@ with t3:
                     unsafe_allow_html=True)
         st.pyplot(fig_quarts_multi(filt_strokes, valid_names))
 
-        # Sections 3 à 8 — masquées (à activer progressivement)
+        # Sections 3 à 7 — masquées (à activer progressivement)
+
+        # Dendrogramme
+        st.markdown('<div class="sh">3 · Similarité entre athlètes — clustering hiérarchique</div>',
+                    unsafe_allow_html=True)
+        st.markdown(
+            '<div class="note">Les dendrogrammes regroupent les athlètes selon '
+            '<b>la forme du coup</b> (profil normalisé) et selon '
+            '<b>les métriques scalaires</b> (AUC+, RFD, Jerk…). '
+            'Plus deux athlètes sont proches, plus leur technique est similaire.</div>',
+            unsafe_allow_html=True)
+        if len(valid_names) >= 2:
+            st.pyplot(fig_dendrogrammes(filt_strokes, valid_names))
+        else:
+            st.info('Sélectionnez au moins 2 athlètes pour afficher le dendrogramme.')
 
 # Onglets ④ ⑤ ⑥ masqués — décommenter pour activer
