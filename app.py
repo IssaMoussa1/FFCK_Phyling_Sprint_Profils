@@ -1846,17 +1846,23 @@ with t1:
 
     # KPI
     if valid_names:
-        st.markdown('<div class="sh">Indicateurs de synthèse</div>',
-                    unsafe_allow_html=True)
+        col_kpi_title, col_kpi_toggle = st.columns([5, 1])
+        with col_kpi_title:
+            st.markdown('<div class="sh">Indicateurs de synthèse</div>',
+                        unsafe_allow_html=True)
+        with col_kpi_toggle:
+            highlight_on = st.toggle('Highlight', value=True, key='kpi_highlight',
+                                     help='Mettre en avant le meilleur résultat par métrique')
 
         # Métriques affichées : (colonne_df, label, format, higher_is_better)
+        # Pour auc_neg : valeur toujours <= 0, meilleur = le plus proche de 0 = False
         KPI = [
             ('auc_pos',   'AUC+',        '{:.4f}', True),
-            ('auc_neg',   '|AUC-|',      '{:.4f}', False),   # moins de freinage = mieux
-            ('sym_ratio', 'Sym ratio',   '{:.3f}', False),   # plus bas = mieux
+            ('auc_neg',   '|AUC-|',      '{:.4f}', False),
+            ('sym_ratio', 'Sym ratio',   '{:.3f}', False),
             ('rfd',       'RFD',         '{:.2f}', True),
-            ('jerk_rms',  'Jerk RMS',    '{:.1f}', False),
             ('duration',  'Durée coup',  '{:.3f}', False),
+            ('jerk_rms',  'Jerk RMS',    '{:.1f}', False),
         ]
 
         # Calculer les moyennes par athlète pour chaque métrique + vitesse
@@ -1880,6 +1886,9 @@ with t1:
             vals = {n: v for n, v in vals.items() if np.isfinite(v)}
             if not vals:
                 return None
+            if metric == 'auc_neg':
+                # Plus proche de 0 = moins de freinage = meilleur
+                return min(vals, key=lambda n: abs(vals[n]))
             return max(vals, key=vals.get) if higher_is_better else min(vals, key=vals.get)
 
         best_speed = best_athlete('v_moy', True)
@@ -1894,35 +1903,33 @@ with t1:
         LBL_NORM  = 'font-size:0.70rem;color:#78909c;text-transform:uppercase;letter-spacing:0.05em;'
         VAL_BEST  = 'font-size:1.4rem;font-weight:700;color:#FFFFFF;font-family:"DM Mono",monospace;'
         VAL_NORM  = 'font-size:1.4rem;font-weight:700;color:#0d2137;font-family:"DM Mono",monospace;'
-        CROWN     = ' 👑'
 
         for name in valid_names:
             df_s      = to_df(filt_strokes[name])
             v_moy_val = kpi_data[name].get('v_moy', np.nan)
             v_str     = '{:.1f} km/h'.format(v_moy_val) if np.isfinite(v_moy_val) else '—'
-            is_fastest = (name == best_speed)
-            speed_badge = (' 🥇' if is_fastest else '')
+            is_fastest = highlight_on and (name == best_speed)
+            speed_badge = (' ★' if is_fastest else '')
 
             st.markdown(
                 f'**{name}**&nbsp; `{len(df_s)} coups` &nbsp;'
                 f'<span style="background:#E3F2FD;border-radius:6px;padding:2px 8px;'
                 f'font-size:0.85rem;color:#0D47A1;font-weight:600">'
-                f'⚡ {v_str}{speed_badge}</span>',
+                f'{v_str}{speed_badge}</span>',
                 unsafe_allow_html=True)
 
             cols = st.columns(len(KPI))
             for col, (m, lbl, fmt, hib) in zip(cols, KPI):
                 v = kpi_data[name].get(m, np.nan)
                 if np.isfinite(v):
-                    is_best = (name == best_per_kpi.get(m))
-                    card = CARD_BEST if is_best else CARD_NORM
-                    lbl_s = LBL_BEST if is_best else LBL_NORM
-                    val_s = VAL_BEST if is_best else VAL_NORM
-                    suffix = CROWN if is_best else ''
+                    is_best = highlight_on and (name == best_per_kpi.get(m))
+                    card  = CARD_BEST if is_best else CARD_NORM
+                    lbl_s = LBL_BEST  if is_best else LBL_NORM
+                    val_s = VAL_BEST  if is_best else VAL_NORM
                     col.markdown(
                         f'<div style="{card}">'
                         f'<div style="{lbl_s}">{lbl}</div>'
-                        f'<div style="{val_s}">{fmt.format(v)}{suffix}</div>'
+                        f'<div style="{val_s}">{fmt.format(v)}</div>'
                         f'</div>',
                         unsafe_allow_html=True)
             st.write('')
@@ -2010,11 +2017,4 @@ with t3:
 
         # Sections 3 à 8 — masquées (à activer progressivement)
 
-# ④ MÉTRIQUES — masqué (à activer ultérieurement)
-# ⑤ VUE TEMPORELLE — masqué (à activer ultérieurement)
-# ══ ⑤ VUE TEMPORELLE ════════════════════════════════════════════════════════
-with t5:
-    build_tab_temporel(valid_names, filt_strokes, raw_signals, selected, roll_w)
-
-
-# ⑥ PERFORMANCE — masqué (à activer ultérieurement)
+# Onglets ④ ⑤ ⑥ masqués — décommenter pour activer
