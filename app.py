@@ -158,23 +158,35 @@ def load_registre():
     """
     cols = ['fichier', 'athlete', 'distance', 'date', 'heure', 'sel', 'notes']
 
+    cols_base = ['fichier', 'athlete', 'distance', 'date', 'heure', 'sel', 'notes']
+    cols_meta = ['discipline', 'sexe', 'categorie', 'bateau', 'type_course', 'lieu']
+    cols_all  = cols_base + cols_meta
+
     if os.path.exists(REGISTRE):
-        df_reg = pd.read_csv(REGISTRE, dtype=str).fillna('')
-        for c in cols:
+        try:
+            df_reg = pd.read_csv(REGISTRE, dtype=str).fillna('')
+        except Exception:
+            df_reg = pd.DataFrame(columns=cols_all)
+        # Ajouter toutes les colonnes manquantes
+        for c in cols_all:
             if c not in df_reg.columns:
                 df_reg[c] = ''
+        # Si la colonne fichier est absente ou vide, repartir de zero
+        if 'fichier' not in df_reg.columns or df_reg['fichier'].eq('').all():
+            df_reg = pd.DataFrame(columns=cols_all)
     else:
-        df_reg = pd.DataFrame(columns=cols)
+        df_reg = pd.DataFrame(columns=cols_all)
 
     # Supprimer les entrees dont le fichier n'existe pas sur disque
-    df_reg = df_reg[df_reg['fichier'].apply(
-        lambda f: os.path.exists(os.path.join(DATA_DIR, f))
-    )].copy()
+    if not df_reg.empty and 'fichier' in df_reg.columns:
+        df_reg = df_reg[df_reg['fichier'].apply(
+            lambda f: bool(f) and os.path.exists(os.path.join(DATA_DIR, f))
+        )].copy()
 
     # Ajouter les nouveaux fichiers detectes
     scanned = pd.DataFrame(scan_data_dir())
     if not scanned.empty:
-        existing  = set(df_reg['fichier'].values)
+        existing  = set(df_reg['fichier'].values) if not df_reg.empty else set()
         new_files = scanned[~scanned['fichier'].isin(existing)]
         if not new_files.empty:
             df_reg = pd.concat([df_reg, new_files], ignore_index=True)
