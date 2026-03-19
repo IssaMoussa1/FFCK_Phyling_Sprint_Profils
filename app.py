@@ -404,28 +404,21 @@ def enrich_registre_from_zips(df_reg):
     return df_reg
 
 
-def render_calendar(available_dates, selected_range=None):
+def render_calendar(all_dates, year, month):
     """
-    Génère un mini-calendrier HTML mensuel avec un point coloré sous
-    chaque jour qui a des données. Retourne le HTML.
+    Génère un mini-calendrier HTML pour le mois donné.
+    Affiche un point bleu sous chaque jour qui a des données.
     """
-    from datetime import date, timedelta
     import calendar as _cal
+    from datetime import date as _date
 
-    if not available_dates:
+    if not all_dates:
         return ""
 
-    # Mois à afficher = mois le plus récent avec des données
-    all_dates = sorted(available_dates)
-    latest    = all_dates[-1]
-    year, month = latest.year, latest.month
-
     days_with_data = {d for d in all_dates if d.year == year and d.month == month}
-
-    # Construire le calendrier
     cal = _cal.monthcalendar(year, month)
-    month_name = ['', 'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
-                  'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'][month]
+    MONTHS = ['','Janvier','Février','Mars','Avril','Mai','Juin',
+              'Juillet','Août','Septembre','Octobre','Novembre','Décembre']
 
     rows = ""
     for week in cal:
@@ -434,26 +427,22 @@ def render_calendar(available_dates, selected_range=None):
             if d == 0:
                 cells += '<td></td>'
             else:
-                day_date = date(year, month, d)
-                has_data = day_date in days_with_data
-                dot = '<div class="cal-dot"></div>' if has_data else '<div class="cal-empty"></div>'
-                style = 'class="cal-day cal-has-data"' if has_data else 'class="cal-day"'
-                cells += '<td {}>{}{}</td>'.format(style, d, dot)
+                has = _date(year, month, d) in days_with_data
+                dot  = '<div class="cal-dot"></div>' if has else '<div class="cal-empty"></div>'
+                cls  = 'cal-day cal-has-data' if has else 'cal-day'
+                cells += '<td class="{}">{}{}</td>'.format(cls, d, dot)
         rows += '<tr>{}</tr>'.format(cells)
 
-    html = """
-<style>
-.cal-wrap{{font-family:'DM Sans',sans-serif;width:100%;}}
-.cal-title{{text-align:center;font-size:0.78rem;font-weight:700;
-            color:#90CAF9;margin-bottom:6px;letter-spacing:0.05em;text-transform:uppercase;}}
-.cal-table{{width:100%;border-collapse:collapse;font-size:0.72rem;}}
-.cal-table th{{color:#546E7A;text-align:center;padding:2px;font-weight:600;}}
-.cal-table td{{text-align:center;padding:2px;color:#CFD8DC;}}
-.cal-day{{cursor:default;}}
-.cal-has-data{{color:#FFFFFF;font-weight:700;}}
-.cal-dot{{width:5px;height:5px;border-radius:50%;background:#1E88E5;
-          margin:1px auto 0;}}
-.cal-empty{{height:6px;}}
+    return """<style>
+.cal-wrap{{font-family:'DM Sans',sans-serif;width:100%}}
+.cal-title{{text-align:center;font-size:0.78rem;font-weight:700;color:#90CAF9;
+            margin-bottom:4px;letter-spacing:.05em;text-transform:uppercase}}
+.cal-table{{width:100%;border-collapse:collapse;font-size:0.72rem}}
+.cal-table th{{color:#546E7A;text-align:center;padding:2px;font-weight:600}}
+.cal-table td{{text-align:center;padding:2px;color:#CFD8DC}}
+.cal-has-data{{color:#FFFFFF;font-weight:700}}
+.cal-dot{{width:5px;height:5px;border-radius:50%;background:#1E88E5;margin:1px auto 0}}
+.cal-empty{{height:6px}}
 </style>
 <div class="cal-wrap">
   <div class="cal-title">{} {}</div>
@@ -461,9 +450,7 @@ def render_calendar(available_dates, selected_range=None):
     <tr><th>L</th><th>M</th><th>M</th><th>J</th><th>V</th><th>S</th><th>D</th></tr>
     {}
   </table>
-</div>""".format(month_name, year, rows)
-
-    return html
+</div>""".format(MONTHS[month], year, rows)
 
 
 
@@ -1961,6 +1948,8 @@ with st.sidebar:
     # ── 5. Calendrier + filtre date ───────────────────────────────────────────
     st.markdown('**Date**')
     from datetime import datetime as _dt, date as _date
+    import streamlit.components.v1 as _components
+
     all_dates_str = df_filt['date'].dropna().replace('', float('nan')).dropna().unique().tolist()
     parsed_dates  = []
     for d in all_dates_str:
@@ -1970,21 +1959,43 @@ with st.sidebar:
             pass
 
     if parsed_dates:
-        # Mini-calendrier visuel
-        cal_html = render_calendar(parsed_dates)
-        if cal_html:
-            import streamlit.components.v1 as _components
-            _components.html(cal_html, height=140, scrolling=False)
-
-        # Sélecteur de date (filtre effectif)
         unique_dates = sorted(set(parsed_dates))
-        date_labels  = [d.strftime('%d/%m/%Y') for d in unique_dates]
-        sel_dates    = st.multiselect('Filtrer par date', date_labels,
-                                      default=date_labels, key='f_date')
-        if sel_dates:
-            sel_dates_iso = [_dt.strptime(d, '%d/%m/%Y').strftime('%Y-%m-%d') for d in sel_dates]
-            df_filt = df_filt[df_filt['date'].isin(sel_dates_iso) | (df_filt['date'] == '')]
+        all_months   = sorted(set((d.year, d.month) for d in unique_dates))
 
+        # Initialiser l'index sur le mois le plus récent
+        if ('cal_month_idx' not in st.session_state or
+                st.session_state['cal_month_idx'] >= len(all_months)):
+            st.session_state['cal_month_idx'] = len(all_months) - 1
+
+        cal_idx = st.session_state['cal_month_idx']
+
+        # Boutons navigation
+        col_prev, col_mid, col_next = st.columns([1, 4, 1])
+        with col_prev:
+            if st.button('‹', key='cal_prev', disabled=(cal_idx == 0),
+                         use_container_width=True):
+                st.session_state['cal_month_idx'] -= 1
+                st.rerun()
+        with col_next:
+            if st.button('›', key='cal_next',
+                         disabled=(cal_idx >= len(all_months) - 1),
+                         use_container_width=True):
+                st.session_state['cal_month_idx'] += 1
+                st.rerun()
+
+        cur_year, cur_month = all_months[st.session_state['cal_month_idx']]
+        cal_html = render_calendar(unique_dates, cur_year, cur_month)
+        if cal_html:
+            _components.html(cal_html, height=145, scrolling=False)
+
+        # Multiselect date (filtre effectif)
+        date_labels = [d.strftime('%d/%m/%Y') for d in unique_dates]
+        sel_dates   = st.multiselect('Filtrer par date', date_labels,
+                                     default=date_labels, key='f_date')
+        if sel_dates:
+            sel_dates_iso = [_dt.strptime(d, '%d/%m/%Y').strftime('%Y-%m-%d')
+                             for d in sel_dates]
+            df_filt = df_filt[df_filt['date'].isin(sel_dates_iso) | (df_filt['date'] == '')]
     # ── 6. Athlètes (liste filtrée) ───────────────────────────────────────────
     st.markdown('**Athlètes**')
     all_athletes = sorted(df_filt['athlete'].dropna().unique().tolist())
@@ -1992,28 +2003,51 @@ with st.sidebar:
                               default=all_athletes[:min(3, len(all_athletes))],
                               key='sel_athletes')
 
+    # Badges métadonnées par athlète sélectionné
+    BADGE_COLORS = {
+        'Kayak': '#1565C0', 'Canoë': '#6A1B9A',
+        'H': '#1B5E20', 'F': '#880E4F',
+        'Senior': '#37474F', 'U23': '#E65100', 'U18': '#BF360C',
+        'U16': '#4A148C', 'K1': '#00695C', 'K2': '#00838F',
+        'K4': '#006064', 'C1': '#4527A0', 'C2': '#283593',
+    }
+    def _badge(label):
+        color = BADGE_COLORS.get(label, '#455A64')
+        return ('<span style="background:{};color:#fff;border-radius:4px;'
+                'padding:1px 6px;font-size:0.68rem;font-weight:600;'
+                'margin-right:3px">{}</span>').format(color, label)
+
+    if selected:
+        for ath in selected:
+            rows_ath = df_filt[df_filt['athlete'] == ath]
+            if rows_ath.empty:
+                continue
+            r = rows_ath.iloc[0]
+            badges = ''
+            for field in ['discipline', 'sexe', 'bateau', 'categorie']:
+                val = str(r.get(field, '')).strip()
+                if val:
+                    badges += _badge(val)
+            if badges:
+                st.markdown(
+                    '<div style="margin:1px 0 4px 0;line-height:1.8">'
+                    '<span style="font-size:0.75rem;color:#90A4AE">{}</span> {}'
+                    '</div>'.format(ath.split()[0], badges),
+                    unsafe_allow_html=True)
+
     # ── 7. Épreuve ────────────────────────────────────────────────────────────
     st.markdown('**Épreuve**')
     all_distances = sorted(df_filt['distance'].dropna().unique().tolist()) if not df_filt.empty else ['250m']
     distance = st.selectbox('Distance', all_distances, label_visibility='collapsed')
 
-    # ── 8. Sessions par athlète ───────────────────────────────────────────────
-    st.markdown('**Sessions**')
+    # ── 8. Résolution automatique : session la plus récente par athlète ───────
     ATHLETES_FILES = {}
     session_labels = {}
-
     for ath in selected:
         sessions = get_sessions_for_athlete(df_filt, ath, distance)
         if not sessions:
-            st.caption('  {} — aucune session {}'.format(ath, distance))
             continue
-        options = [s['label'] for s in sessions]
-        if len(sessions) == 1:
-            chosen_label = st.selectbox(ath.split()[0], options, index=0,
-                                        key='sess_' + ath, disabled=True)
-        else:
-            chosen_label = st.selectbox(ath.split()[0], options, key='sess_' + ath)
-        chosen = next(s for s in sessions if s['label'] == chosen_label)
+        chosen = sessions[-1]
         ATHLETES_FILES[ath] = chosen['fichier']
         session_labels[ath] = chosen['label']
 
