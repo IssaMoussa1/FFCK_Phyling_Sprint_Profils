@@ -182,6 +182,14 @@ def load_registre():
     # Dedoublonner sur le nom de fichier (garde la premiere occurrence)
     df_reg = df_reg.drop_duplicates(subset=['fichier'], keep='first').reset_index(drop=True)
 
+    # Ajouter colonnes métadonnées si absentes
+    for c in ['discipline', 'sexe', 'categorie', 'bateau', 'type_course', 'lieu']:
+        if c not in df_reg.columns:
+            df_reg[c] = ''
+
+    # Enrichir depuis les zips si disponibles
+    df_reg = enrich_registre_from_zips(df_reg)
+
     # Sauvegarder le registre nettoye
     df_reg.to_csv(REGISTRE, index=False)
 
@@ -220,6 +228,231 @@ def get_sessions_for_athlete(df_reg, athlete, distance):
             'sel':     row.get('sel', '1'),
         })
     return sessions
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MÉTADONNÉES — PARSER COMMENT + ZIP
+# ─────────────────────────────────────────────────────────────────────────────
+
+COMMENT_DICT = {
+    # Discipline
+    'K': ('discipline', 'Kayak'),
+    'C': ('discipline', 'Canoë'),
+    # Sexe (D = Dame = F)
+    'H': ('sexe', 'H'),
+    'D': ('sexe', 'F'),
+    # Type de course
+    'FA': ('type_course', 'Finale A'),
+    'FB': ('type_course', 'Finale B'),
+    'SF': ('type_course', 'Demi-finale'),
+    # Lieux
+    'BSM': ('lieu', 'Boulogne-sur-Mer'),
+}
+CATEGORIE_PATTERN = re.compile(r'\b(U\d{2})\b', re.IGNORECASE)
+BATEAU_PATTERN    = re.compile(r'\b([KC][124])\b', re.IGNORECASE)
+
+
+def parse_comment(comment):
+    """
+    Extrait les métadonnées depuis la colonne comment de maxi_database.xlsx.
+    Ex: "FA K2D U18 BSM" → {discipline:Kayak, sexe:F, bateau:K2, categorie:U18,
+                             type_course:Finale A, lieu:Boulogne-sur-Mer}
+    """
+    meta = {
+        'discipline':   '',
+        'sexe':         '',
+        'categorie':    'Senior',
+        'bateau':       '',
+        'type_course':  '',
+        'lieu':         '',
+    }
+    if not comment or not isinstance(comment, str):
+        return meta
+
+    tokens = comment.upper().split()
+
+    for tok in tokens:
+        if tok in COMMENT_DICT:
+            field, val = COMMENT_DICT[tok]
+            meta[field] = val
+
+    # Catégorie U18, U23...
+    m_cat = CATEGORIE_PATTERN.search(comment)
+    if m_cat:
+        meta['categorie'] = m_cat.group(1).upper()
+
+    # Bateau K1/K2/K4/C1/C2/C4
+    m_bat = BATEAU_PATTERN.search(comment)
+    if m_bat:
+        meta['bateau'] = m_bat.group(1).upper()
+        # Déduire discipline si pas encore trouvée
+        if not meta['discipline']:
+            meta['discipline'] = 'Kayak' if meta['bateau'].startswith('K') else 'Canoë'
+
+    return meta
+
+
+def parse_zip_metadata(zip_path):
+    """
+    Lit le maxi_database.xlsx dans un zip et retourne les métadonnées.
+    Retourne un dict ou None si non trouvé.
+    """
+    import zipfile, io
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            names = zf.namelist()
+            xlsx_name = next((n for n in names if n.endswith('maxi_database.xlsx')), None)
+            if not xlsx_name:
+                return None
+            with zf.open(xlsx_name) as f:
+                xl = pd.ExcelFile(io.BytesIO(f.read()))
+
+            meta = {}
+
+            # Feuille Record → comment + sport + other_data
+            if 'Record' in xl.sheet_names:
+                df_rec = xl.parse('Record').fillna('')
+                if not df_rec.empty:
+                    row = df_rec.iloc[0]
+                    comment = str(row.get('comment', ''))
+                    meta.update(parse_comment(comment))
+                    meta['comment_raw'] = comment
+                    if not meta['discipline'] and str(row.get('sport', '')).lower() == 'kayak':
+                        meta['discipline'] = 'Kayak'
+                    # Bateau depuis other_data JSON
+                    if not meta['bateau']:
+                        try:
+                            import json as _json
+                            od = _json.loads(str(row.get('other_data', '{}')))
+                            boat = od.get('boat', '')
+                            if boat:
+                                meta['bateau'] = boat.upper()
+                        except Exception:
+                            pass
+
+            # Feuille User → noms des athlètes
+            if 'User' in xl.sheet_names:
+                df_usr = xl.parse('User').fillna('')
+                athletes = []
+                for _, u in df_usr.iterrows():
+                    fn = str(u.get('firstname', '')).strip().capitalize()
+                    ln = str(u.get('lastname', '')).strip().capitalize()
+                    if fn or ln:
+                        athletes.append('{} {}'.format(fn, ln).strip())
+                meta['athletes_zip'] = athletes
+
+            return meta
+    except Exception:
+        return None
+
+
+def enrich_registre_from_zips(df_reg):
+    """
+    Parcourt data/zips/, lit les métadonnées, enrichit df_reg.
+    Crée les colonnes manquantes si nécessaire.
+    """
+    zips_dir = os.path.join(DATA_DIR, 'zips')
+    if not os.path.isdir(zips_dir):
+        return df_reg
+
+    meta_cols = ['discipline', 'sexe', 'categorie', 'bateau', 'type_course', 'lieu']
+    for c in meta_cols:
+        if c not in df_reg.columns:
+            df_reg[c] = ''
+
+    # Mapper folder_name → lignes du registre
+    # Le zip contient folder_name comme YYYYMMDD_HHMMSS_0/
+    # Le registre a date+heure → on peut matcher
+    for zip_fname in os.listdir(zips_dir):
+        if not zip_fname.endswith('.zip'):
+            continue
+        zip_path = os.path.join(zips_dir, zip_fname)
+        meta = parse_zip_metadata(zip_path)
+        if not meta:
+            continue
+
+        # Extraire date+heure depuis le nom du zip : nom-YYYYMMDD_HHMMSS-dist.zip
+        m_zip = re.search(r'([0-9]{8})_([0-9]{6})', zip_fname)
+        if not m_zip:
+            continue
+        date_raw, heure_raw = m_zip.groups()
+        date_str  = '{}-{}-{}'.format(date_raw[:4], date_raw[4:6], date_raw[6:])
+        heure_str = '{}:{}'.format(heure_raw[:2], heure_raw[2:4])
+
+        # Trouver les lignes correspondantes dans le registre
+        mask = (df_reg['date'] == date_str) & (df_reg['heure'].str.startswith(heure_str[:5]))
+        if mask.sum() == 0:
+            continue
+
+        for col in meta_cols:
+            val = meta.get(col, '')
+            if val:
+                df_reg.loc[mask & (df_reg[col] == ''), col] = val
+
+    return df_reg
+
+
+def render_calendar(available_dates, selected_range=None):
+    """
+    Génère un mini-calendrier HTML mensuel avec un point coloré sous
+    chaque jour qui a des données. Retourne le HTML.
+    """
+    from datetime import date, timedelta
+    import calendar as _cal
+
+    if not available_dates:
+        return ""
+
+    # Mois à afficher = mois le plus récent avec des données
+    all_dates = sorted(available_dates)
+    latest    = all_dates[-1]
+    year, month = latest.year, latest.month
+
+    days_with_data = {d for d in all_dates if d.year == year and d.month == month}
+
+    # Construire le calendrier
+    cal = _cal.monthcalendar(year, month)
+    month_name = ['', 'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
+                  'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'][month]
+
+    rows = ""
+    for week in cal:
+        cells = ""
+        for d in week:
+            if d == 0:
+                cells += '<td></td>'
+            else:
+                day_date = date(year, month, d)
+                has_data = day_date in days_with_data
+                dot = '<div class="cal-dot"></div>' if has_data else '<div class="cal-empty"></div>'
+                style = 'class="cal-day cal-has-data"' if has_data else 'class="cal-day"'
+                cells += '<td {}>{}{}</td>'.format(style, d, dot)
+        rows += '<tr>{}</tr>'.format(cells)
+
+    html = """
+<style>
+.cal-wrap{{font-family:'DM Sans',sans-serif;width:100%;}}
+.cal-title{{text-align:center;font-size:0.78rem;font-weight:700;
+            color:#90CAF9;margin-bottom:6px;letter-spacing:0.05em;text-transform:uppercase;}}
+.cal-table{{width:100%;border-collapse:collapse;font-size:0.72rem;}}
+.cal-table th{{color:#546E7A;text-align:center;padding:2px;font-weight:600;}}
+.cal-table td{{text-align:center;padding:2px;color:#CFD8DC;}}
+.cal-day{{cursor:default;}}
+.cal-has-data{{color:#FFFFFF;font-weight:700;}}
+.cal-dot{{width:5px;height:5px;border-radius:50%;background:#1E88E5;
+          margin:1px auto 0;}}
+.cal-empty{{height:6px;}}
+</style>
+<div class="cal-wrap">
+  <div class="cal-title">{} {}</div>
+  <table class="cal-table">
+    <tr><th>L</th><th>M</th><th>M</th><th>J</th><th>V</th><th>S</th><th>D</th></tr>
+    {}
+  </table>
+</div>""".format(month_name, year, rows)
+
+    return html
+
 
 
 # ── Cache pickle ──────────────────────────────────────────────────────────────
@@ -1668,54 +1901,106 @@ with st.sidebar:
     st.caption('Analyse des coups de pagaie · Maxi-Phyling')
     st.divider()
 
-    st.markdown('**Athlètes**')
     # Chargement dynamique depuis registre.csv + scan du dossier data/
     df_registre = load_registre()
-    all_athletes = get_athletes_list(df_registre)
-
-    # Stats registre
-    n_sessions = len(df_registre)
-    n_athletes = len(all_athletes)
+    n_sessions  = len(df_registre)
+    n_athletes  = df_registre['athlete'].nunique() if not df_registre.empty else 0
     st.caption('{} session(s) · {} athlète(s)'.format(n_sessions, n_athletes))
 
-    # ── 1. Sélection des athlètes ─────────────────────────────────────────────
-    st.markdown('**Athlètes**')
-    selected = st.multiselect(
-        'Sélectionner',
-        all_athletes,
-        default=all_athletes[:min(3, len(all_athletes))]
-    )
+    df_filt = df_registre.copy()
 
-    # ── 2. Épreuve ────────────────────────────────────────────────────────────
+    # ── 1. Discipline ─────────────────────────────────────────────────────────
+    disciplines = sorted(df_filt['discipline'].dropna().replace('', float('nan')).dropna().unique().tolist())
+    if disciplines:
+        st.markdown('**Discipline**')
+        sel_discipline = st.multiselect('Discipline', disciplines,
+                                        default=disciplines, key='f_disc',
+                                        label_visibility='collapsed')
+        if sel_discipline:
+            df_filt = df_filt[df_filt['discipline'].isin(sel_discipline) | (df_filt['discipline'] == '')]
+
+    # ── 2. Sexe ───────────────────────────────────────────────────────────────
+    sexes = sorted(df_filt['sexe'].dropna().replace('', float('nan')).dropna().unique().tolist())
+    if sexes:
+        st.markdown('**Sexe**')
+        sel_sexe = st.multiselect('Sexe', sexes, default=sexes, key='f_sexe',
+                                  label_visibility='collapsed')
+        if sel_sexe:
+            df_filt = df_filt[df_filt['sexe'].isin(sel_sexe) | (df_filt['sexe'] == '')]
+
+    # ── 3. Catégorie ──────────────────────────────────────────────────────────
+    cats = sorted(df_filt['categorie'].dropna().replace('', float('nan')).dropna().unique().tolist())
+    if cats:
+        st.markdown('**Catégorie**')
+        sel_cat = st.multiselect('Catégorie', cats, default=cats, key='f_cat',
+                                 label_visibility='collapsed')
+        if sel_cat:
+            df_filt = df_filt[df_filt['categorie'].isin(sel_cat) | (df_filt['categorie'] == '')]
+
+    # ── 4. Bateau ─────────────────────────────────────────────────────────────
+    bateaux = sorted(df_filt['bateau'].dropna().replace('', float('nan')).dropna().unique().tolist())
+    if bateaux:
+        st.markdown('**Bateau**')
+        sel_bateau = st.multiselect('Bateau', bateaux, default=bateaux, key='f_bat',
+                                    label_visibility='collapsed')
+        if sel_bateau:
+            df_filt = df_filt[df_filt['bateau'].isin(sel_bateau) | (df_filt['bateau'] == '')]
+
+    # ── 5. Calendrier + filtre date ───────────────────────────────────────────
+    st.markdown('**Date**')
+    from datetime import datetime as _dt, date as _date
+    all_dates_str = df_filt['date'].dropna().replace('', float('nan')).dropna().unique().tolist()
+    parsed_dates  = []
+    for d in all_dates_str:
+        try:
+            parsed_dates.append(_dt.strptime(str(d), '%Y-%m-%d').date())
+        except Exception:
+            pass
+
+    if parsed_dates:
+        # Mini-calendrier visuel
+        cal_html = render_calendar(parsed_dates)
+        if cal_html:
+            import streamlit.components.v1 as _components
+            _components.html(cal_html, height=140, scrolling=False)
+
+        # Sélecteur de date (filtre effectif)
+        unique_dates = sorted(set(parsed_dates))
+        date_labels  = [d.strftime('%d/%m/%Y') for d in unique_dates]
+        sel_dates    = st.multiselect('Filtrer par date', date_labels,
+                                      default=date_labels, key='f_date')
+        if sel_dates:
+            sel_dates_iso = [_dt.strptime(d, '%d/%m/%Y').strftime('%Y-%m-%d') for d in sel_dates]
+            df_filt = df_filt[df_filt['date'].isin(sel_dates_iso) | (df_filt['date'] == '')]
+
+    # ── 6. Athlètes (liste filtrée) ───────────────────────────────────────────
+    st.markdown('**Athlètes**')
+    all_athletes = sorted(df_filt['athlete'].dropna().unique().tolist())
+    selected = st.multiselect('Sélectionner', all_athletes,
+                              default=all_athletes[:min(3, len(all_athletes))],
+                              key='sel_athletes')
+
+    # ── 7. Épreuve ────────────────────────────────────────────────────────────
     st.markdown('**Épreuve**')
-    all_distances = sorted(df_registre['distance'].dropna().unique().tolist()) if not df_registre.empty else ['250m']
+    all_distances = sorted(df_filt['distance'].dropna().unique().tolist()) if not df_filt.empty else ['250m']
     distance = st.selectbox('Distance', all_distances, label_visibility='collapsed')
 
-    # ── 3. Sessions par athlète ───────────────────────────────────────────────
+    # ── 8. Sessions par athlète ───────────────────────────────────────────────
     st.markdown('**Sessions**')
-    ATHLETES_FILES = {}   # {display_name: fichier}
-    session_labels = {}   # {display_name: label affiché}
+    ATHLETES_FILES = {}
+    session_labels = {}
 
     for ath in selected:
-        sessions = get_sessions_for_athlete(df_registre, ath, distance)
+        sessions = get_sessions_for_athlete(df_filt, ath, distance)
         if not sessions:
             st.caption('  {} — aucune session {}'.format(ath, distance))
             continue
         options = [s['label'] for s in sessions]
         if len(sessions) == 1:
-            chosen_label = st.selectbox(
-                ath.split()[0],
-                options,
-                index=0,
-                key='sess_' + ath,
-                disabled=True
-            )
+            chosen_label = st.selectbox(ath.split()[0], options, index=0,
+                                        key='sess_' + ath, disabled=True)
         else:
-            chosen_label = st.selectbox(
-                ath.split()[0],
-                options,
-                key='sess_' + ath
-            )
+            chosen_label = st.selectbox(ath.split()[0], options, key='sess_' + ath)
         chosen = next(s for s in sessions if s['label'] == chosen_label)
         ATHLETES_FILES[ath] = chosen['fichier']
         session_labels[ath] = chosen['label']
