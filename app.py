@@ -51,78 +51,70 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 def _parse_filename(fname):
     """
     Extrait (athlete, distance, date, heure, sel) depuis le nom de fichier.
-
-    Formats supportés :
-      Nouveau : romney_ruben-20260308_095034-500m-sel_1.csv
-      Ancien  : bavenkoff_viktor20260218_024153sel_250.csv
-
-    Retourne un dict ou None si non reconnu.
+    Gère K1, K2 (deux noms séparés par -), distance absente, ancien format.
     """
     base = os.path.splitext(os.path.basename(fname))[0]
 
-    # ── Format nouveau : parties séparées par '-' ──────────────────────────
-    # romney_ruben-20260308_095034-500m-sel_1
-    # Style A : romney_ruben-20260308_095034-500m-sel_1
-    m_new = re.match(
-        r'^([a-z][a-z0-9_]+)-([0-9]{8})_([0-9]{6})-([0-9]+m)-sel_([0-9]+)$',
-        base, re.IGNORECASE
-    )
-    if m_new:
-        name_raw, date_raw, heure_raw, dist, sel = m_new.groups()
-        athlete  = ' '.join(w.capitalize() for w in name_raw.split('_'))
-        date_str = '{}-{}-{}'.format(date_raw[:4], date_raw[4:6], date_raw[6:])
+    # ── Formats nouveaux : date YYYYMMDD_HHMMSS dans le nom ────────────────
+    m_date = re.search(r'([0-9]{8})_([0-9]{6})', base)
+    if m_date:
+        date_raw  = m_date.group(1)
+        heure_raw = m_date.group(2)
+        date_str  = '{}-{}-{}'.format(date_raw[:4], date_raw[4:6], date_raw[6:])
         heure_str = '{}:{}'.format(heure_raw[:2], heure_raw[2:4])
+
+        # Noms avant la date, suffixe après
+        name_part = base[:m_date.start()].strip('-_')
+        suffix    = base[m_date.end():].strip('-_')
+
+        # Distance et numéro de sélection
+        m_dist = re.search(r'([0-9]+m)', suffix, re.IGNORECASE)
+        m_sel  = re.search(r'sel[_-]([0-9]+)', suffix, re.IGNORECASE)
+        dist   = m_dist.group(1) if m_dist else ''
+        sel    = m_sel.group(1)  if m_sel  else '1'
+
+        # Noms : K2 = deux segments séparés par -
+        name_segments = [s.strip('_') for s in name_part.split('-') if s.strip('_')]
+        athletes = []
+        for seg in name_segments:
+            display = ' '.join(w.capitalize() for w in seg.split('_'))
+            athletes.append(display)
+        athlete = ' / '.join(athletes) if len(athletes) > 1 else (athletes[0] if athletes else '')
+
+        if not athlete:
+            return None
+
         return {
-            'athlete':  athlete,
-            'distance': dist,
-            'date':     date_str,
-            'heure':    heure_str,
-            'sel':      sel,
-            'format':   'nouveau_a',
+            'athlete':    athlete,
+            'distance':   dist,
+            'date':       date_str,
+            'heure':      heure_str,
+            'sel':        sel,
+            'format':     'nouveau',
+            'n_athletes': len(athletes),
         }
 
-    # Style B : bonnavaud_marine-20260303_091820-sel_500
-    m_b = re.match(
-        r'^([a-z][a-z0-9_]+)-([0-9]{8})_([0-9]{6})-sel_([0-9]+)$',
-        base, re.IGNORECASE
-    )
-    if m_b:
-        name_raw, date_raw, heure_raw, dist_raw = m_b.groups()
-        athlete  = ' '.join(w.capitalize() for w in name_raw.split('_'))
-        date_str = '{}-{}-{}'.format(date_raw[:4], date_raw[4:6], date_raw[6:])
-        heure_str = '{}:{}'.format(heure_raw[:2], heure_raw[2:4])
-        return {
-            'athlete':  athlete,
-            'distance': dist_raw + 'm',
-            'date':     date_str,
-            'heure':    heure_str,
-            'sel':      '1',
-            'format':   'nouveau_b',
-        }
-
-    # ── Format ancien : nom+date collés, sel_250 ou sel_2000 à la fin ──────
-    # bavenkoff_viktor20260218_024153sel_250
+    # ── Format ancien : bavenkoff_viktor20260218_024153sel_250 ─────────────
     m_old = re.match(
         r'^([a-z][a-z0-9_]+?)([0-9]{8})_?([0-9]{6})sel[_-]([0-9]+)$',
         base, re.IGNORECASE
     )
     if m_old:
         name_raw, date_raw, heure_raw, dist_raw = m_old.groups()
-        athlete  = ' '.join(w.capitalize() for w in name_raw.strip('_').split('_'))
-        date_str = '{}-{}-{}'.format(date_raw[:4], date_raw[4:6], date_raw[6:])
+        athlete   = ' '.join(w.capitalize() for w in name_raw.strip('_').split('_'))
+        date_str  = '{}-{}-{}'.format(date_raw[:4], date_raw[4:6], date_raw[6:])
         heure_str = '{}:{}'.format(heure_raw[:2], heure_raw[2:4])
-        dist     = dist_raw + 'm'
         return {
-            'athlete':  athlete,
-            'distance': dist,
-            'date':     date_str,
-            'heure':    heure_str,
-            'sel':      '1',
-            'format':   'ancien',
+            'athlete':    athlete,
+            'distance':   dist_raw + 'm',
+            'date':       date_str,
+            'heure':      heure_str,
+            'sel':        '1',
+            'format':     'ancien',
+            'n_athletes': 1,
         }
 
     return None
-
 
 def scan_data_dir():
     """
@@ -194,16 +186,22 @@ def load_registre():
     # Dedoublonner sur le nom de fichier (garde la premiere occurrence)
     df_reg = df_reg.drop_duplicates(subset=['fichier'], keep='first').reset_index(drop=True)
 
-    # Ajouter colonnes métadonnées si absentes
+    # Ajouter colonnes métadonnées si absentes (sans écraser les valeurs existantes)
     for c in ['discipline', 'sexe', 'categorie', 'bateau', 'type_course', 'lieu']:
         if c not in df_reg.columns:
             df_reg[c] = ''
 
     # Enrichir depuis les zips si disponibles
+    df_reg_before = df_reg.copy()
     df_reg = enrich_registre_from_zips(df_reg)
 
-    # Sauvegarder le registre nettoye
-    df_reg.to_csv(REGISTRE, index=False)
+    # Sauvegarder UNIQUEMENT si le contenu a changé (évite d'écraser les méta)
+    try:
+        changed = not df_reg.equals(df_reg_before) or not os.path.exists(REGISTRE)
+        if changed:
+            df_reg.to_csv(REGISTRE, index=False)
+    except Exception:
+        pass  # Filesystem read-only (ex: Streamlit Cloud) — continuer sans sauvegarder
 
     return df_reg
 
