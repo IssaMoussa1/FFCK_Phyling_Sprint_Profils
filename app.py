@@ -156,7 +156,7 @@ def load_registre():
 
     if os.path.exists(REGISTRE):
         try:
-            df_reg = pd.read_csv(REGISTRE, dtype=str).fillna('')
+            df_reg = pd.read_csv(REGISTRE, dtype=str, encoding='utf-8').fillna('')
         except Exception:
             df_reg = pd.DataFrame(columns=cols_all)
         # Ajouter toutes les colonnes manquantes
@@ -2138,6 +2138,13 @@ with st.sidebar:
 
 
 # ── CHARGEMENT ───────────────────────────────────────────────────────────────
+# Filtres de coups : valeurs par défaut (sliders supprimés pour simplifier l'UI)
+d_max   = 2000 if distance == '2000m' else (1000 if distance == '1000m' else
+          500  if distance == '500m'  else 250)
+d_range = (0, d_max)
+s_lo    = 1
+s_hi    = 400
+
 if not selected:
     st.warning('Sélectionnez au moins un athlète.')
     st.stop()
