@@ -402,21 +402,18 @@ def enrich_registre_from_zips(df_reg):
     return df_reg
 
 
-def render_calendar(all_dates, year, month):
+def render_calendar(available_dates, year, month, date_data=None):
     """
-    Génère un mini-calendrier HTML pour le mois donné.
-    Affiche un point bleu sous chaque jour qui a des données.
+    Mini-calendrier HTML interactif. Les jours avec données ont un point bleu
+    et une infobulle au survol listant athlète / distance / date.
+    date_data : dict {date: [(athlete, distance), ...]}
     """
     import calendar as _cal
-    from datetime import date as _date
-
-    if not all_dates:
-        return ""
-
-    days_with_data = {d for d in all_dates if d.year == year and d.month == month}
-    cal = _cal.monthcalendar(year, month)
     MONTHS = ['','Janvier','Février','Mars','Avril','Mai','Juin',
               'Juillet','Août','Septembre','Octobre','Novembre','Décembre']
+
+    days_with_data = {d for d in available_dates if d.year == year and d.month == month}
+    cal = _cal.monthcalendar(year, month)
 
     rows = ""
     for week in cal:
@@ -424,33 +421,79 @@ def render_calendar(all_dates, year, month):
         for d in week:
             if d == 0:
                 cells += '<td></td>'
+                continue
+            from datetime import date as _date
+            day_date = _date(year, month, d)
+            has_data = day_date in days_with_data
+            if has_data and date_data:
+                entries = date_data.get(day_date, [])
+                lines = []
+                for i, (ath, dist) in enumerate(entries[:3]):
+                    lines.append('{} · {}'.format(ath.split('/')[0].strip(), dist or '?'))
+                if len(entries) > 3:
+                    lines.append('...')
+                tooltip = '&#10;'.join(lines)
+                cells += (
+                    '<td class="cal-has-data" title="{}">'
+                    '{}<div class="cal-dot"></div></td>'
+                ).format(tooltip, d)
+            elif has_data:
+                cells += '<td class="cal-has-data">{}<div class="cal-dot"></div></td>'.format(d)
             else:
-                has = _date(year, month, d) in days_with_data
-                dot  = '<div class="cal-dot"></div>' if has else '<div class="cal-empty"></div>'
-                cls  = 'cal-day cal-has-data' if has else 'cal-day'
-                cells += '<td class="{}">{}{}</td>'.format(cls, d, dot)
+                cells += '<td class="cal-day">{}</td>'.format(d)
         rows += '<tr>{}</tr>'.format(cells)
 
-    return """<style>
-.cal-wrap{{font-family:'DM Sans',sans-serif;width:100%}}
-.cal-title{{text-align:center;font-size:0.78rem;font-weight:700;color:#90CAF9;
-            margin-bottom:4px;letter-spacing:.05em;text-transform:uppercase}}
-.cal-table{{width:100%;border-collapse:collapse;font-size:0.72rem}}
-.cal-table th{{color:#546E7A;text-align:center;padding:2px;font-weight:600}}
-.cal-table td{{text-align:center;padding:2px;color:#CFD8DC}}
-.cal-has-data{{color:#FFFFFF;font-weight:700}}
-.cal-dot{{width:5px;height:5px;border-radius:50%;background:#1E88E5;margin:1px auto 0}}
-.cal-empty{{height:6px}}
+    html = """
+<style>
+.cal-wrap{{font-family:'DM Sans',sans-serif;width:100%;position:relative;}}
+.cal-title{{text-align:center;font-size:0.76rem;font-weight:700;
+            color:#90CAF9;margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em}}
+.cal-table{{width:100%;border-collapse:collapse;font-size:0.72rem;}}
+.cal-table th{{color:#546E7A;text-align:center;padding:2px;font-weight:600;}}
+.cal-table td{{text-align:center;padding:2px 1px;color:#CFD8DC;cursor:default;
+               position:relative;}}
+.cal-has-data{{color:#FFFFFF;font-weight:700;cursor:pointer;}}
+.cal-dot{{width:5px;height:5px;border-radius:50%;background:#1E88E5;margin:1px auto 0;}}
+.cal-day{{}}
+/* Tooltip natif amélioré via JS */
+.cal-tooltip{{
+  display:none;position:fixed;z-index:9999;
+  background:#1A2332;border:1px solid #2d3f55;border-radius:8px;
+  padding:8px 12px;font-size:0.72rem;color:#E3F2FD;
+  box-shadow:0 4px 16px rgba(0,0,0,.5);
+  pointer-events:none;white-space:pre-line;min-width:160px;max-width:220px;
+}}
 </style>
 <div class="cal-wrap">
-  <div class="cal-title">{} {}</div>
+  <div class="cal-title">{month_name} {year}</div>
   <table class="cal-table">
     <tr><th>L</th><th>M</th><th>M</th><th>J</th><th>V</th><th>S</th><th>D</th></tr>
-    {}
+    {rows}
   </table>
-</div>""".format(MONTHS[month], year, rows)
-
-
+</div>
+<div class="cal-tooltip" id="cal-tt"></div>
+<script>
+(function(){{
+  var tt = document.getElementById('cal-tt');
+  document.querySelectorAll('.cal-has-data[title]').forEach(function(el){{
+    el.addEventListener('mouseenter', function(e){{
+      tt.textContent = el.getAttribute('title').replace(/&#10;/g,'\n');
+      tt.style.display = 'block';
+      tt.style.left = (e.clientX + 12) + 'px';
+      tt.style.top  = (e.clientY - 10) + 'px';
+    }});
+    el.addEventListener('mousemove', function(e){{
+      tt.style.left = (e.clientX + 12) + 'px';
+      tt.style.top  = (e.clientY - 10) + 'px';
+    }});
+    el.addEventListener('mouseleave', function(){{
+      tt.style.display = 'none';
+    }});
+  }});
+}})();
+</script>
+""".format(month_name=MONTHS[month], year=year, rows=rows)
+    return html
 
 # ── Cache pickle ──────────────────────────────────────────────────────────────
 
@@ -1906,49 +1949,36 @@ with st.sidebar:
 
     df_filt = df_registre.copy()
 
-    # ── 1. Discipline ─────────────────────────────────────────────────────────
-    disciplines = sorted(df_filt['discipline'].dropna().replace('', float('nan')).dropna().unique().tolist())
+    # ── Helper : valeurs propres (sans nan/vide) ─────────────────────────────────
+    def _vals(col):
+        return sorted(df_filt[col].replace('nan','').replace('',float('nan'))
+                      .dropna().unique().tolist())
+
+    # ── 1. Sexe ───────────────────────────────────────────────────────────────
+    sexes = _vals('sexe')
+    if sexes:
+        st.markdown('**Sexe**')
+        sel_sexe = st.multiselect('Sexe', sexes, default=sexes, key='f_sexe',
+                                  label_visibility='collapsed')
+        if sel_sexe:
+            df_filt = df_filt[df_filt['sexe'].isin(sel_sexe) | (df_filt['sexe'].isin(['','nan']))]
+
+    # ── 2. Discipline ─────────────────────────────────────────────────────────
+    disciplines = _vals('discipline')
     if disciplines:
         st.markdown('**Discipline**')
         sel_discipline = st.multiselect('Discipline', disciplines,
                                         default=disciplines, key='f_disc',
                                         label_visibility='collapsed')
         if sel_discipline:
-            df_filt = df_filt[df_filt['discipline'].isin(sel_discipline) | (df_filt['discipline'] == '')]
+            df_filt = df_filt[df_filt['discipline'].isin(sel_discipline) | (df_filt['discipline'].isin(['','nan']))]
 
-    # ── 2. Sexe ───────────────────────────────────────────────────────────────
-    sexes = sorted(df_filt['sexe'].dropna().replace('', float('nan')).dropna().unique().tolist())
-    if sexes:
-        st.markdown('**Sexe**')
-        sel_sexe = st.multiselect('Sexe', sexes, default=sexes, key='f_sexe',
-                                  label_visibility='collapsed')
-        if sel_sexe:
-            df_filt = df_filt[df_filt['sexe'].isin(sel_sexe) | (df_filt['sexe'] == '')]
-
-    # ── 3. Catégorie ──────────────────────────────────────────────────────────
-    cats = sorted(df_filt['categorie'].dropna().replace('', float('nan')).dropna().unique().tolist())
-    if cats:
-        st.markdown('**Catégorie**')
-        sel_cat = st.multiselect('Catégorie', cats, default=cats, key='f_cat',
-                                 label_visibility='collapsed')
-        if sel_cat:
-            df_filt = df_filt[df_filt['categorie'].isin(sel_cat) | (df_filt['categorie'] == '')]
-
-    # ── 4. Bateau ─────────────────────────────────────────────────────────────
-    bateaux = sorted(df_filt['bateau'].dropna().replace('', float('nan')).dropna().unique().tolist())
-    if bateaux:
-        st.markdown('**Bateau**')
-        sel_bateau = st.multiselect('Bateau', bateaux, default=bateaux, key='f_bat',
-                                    label_visibility='collapsed')
-        if sel_bateau:
-            df_filt = df_filt[df_filt['bateau'].isin(sel_bateau) | (df_filt['bateau'] == '')]
-
-    # ── 5. Calendrier + filtre date ───────────────────────────────────────────
+    # ── 3. Calendrier + filtre date ───────────────────────────────────────────
     st.markdown('**Date**')
     from datetime import datetime as _dt, date as _date
     import streamlit.components.v1 as _components
 
-    all_dates_str = df_filt['date'].dropna().replace('', float('nan')).dropna().unique().tolist()
+    all_dates_str = df_filt['date'].replace('', float('nan')).dropna().unique().tolist()
     parsed_dates  = []
     for d in all_dates_str:
         try:
@@ -1960,14 +1990,12 @@ with st.sidebar:
         unique_dates = sorted(set(parsed_dates))
         all_months   = sorted(set((d.year, d.month) for d in unique_dates))
 
-        # Initialiser l'index sur le mois le plus récent
         if ('cal_month_idx' not in st.session_state or
                 st.session_state['cal_month_idx'] >= len(all_months)):
             st.session_state['cal_month_idx'] = len(all_months) - 1
 
         cal_idx = st.session_state['cal_month_idx']
 
-        # Boutons navigation
         col_prev, col_mid, col_next = st.columns([1, 4, 1])
         with col_prev:
             if st.button('‹', key='cal_prev', disabled=(cal_idx == 0),
@@ -1982,63 +2010,86 @@ with st.sidebar:
                 st.rerun()
 
         cur_year, cur_month = all_months[st.session_state['cal_month_idx']]
-        cal_html = render_calendar(unique_dates, cur_year, cur_month)
-        if cal_html:
-            _components.html(cal_html, height=145, scrolling=False)
 
-        # Multiselect date (filtre effectif)
+        # Construire date_data pour les tooltips
+        date_data = {}
+        for _, row in df_filt.iterrows():
+            try:
+                d = _dt.strptime(str(row['date']), '%Y-%m-%d').date()
+                date_data.setdefault(d, []).append(
+                    (str(row['athlete']), str(row['distance']))
+                )
+            except Exception:
+                pass
+
+        cal_html = render_calendar(unique_dates, cur_year, cur_month, date_data)
+        if cal_html:
+            _components.html(cal_html, height=160, scrolling=False)
+
         date_labels = [d.strftime('%d/%m/%Y') for d in unique_dates]
         sel_dates   = st.multiselect('Filtrer par date', date_labels,
                                      default=date_labels, key='f_date')
         if sel_dates:
             sel_dates_iso = [_dt.strptime(d, '%d/%m/%Y').strftime('%Y-%m-%d')
                              for d in sel_dates]
-            df_filt = df_filt[df_filt['date'].isin(sel_dates_iso) | (df_filt['date'] == '')]
-    # ── 6. Athlètes (liste filtrée) ───────────────────────────────────────────
+            df_filt = df_filt[df_filt['date'].isin(sel_dates_iso) | (df_filt['date'].isin(['','nan']))]
+
+    # ── 4. Athlètes ───────────────────────────────────────────────────────────
     st.markdown('**Athlètes**')
     all_athletes = sorted(df_filt['athlete'].dropna().unique().tolist())
     selected = st.multiselect('Sélectionner', all_athletes,
                               default=all_athletes[:min(3, len(all_athletes))],
                               key='sel_athletes')
 
-    # Badges métadonnées par athlète sélectionné
-    BADGE_COLORS = {
-        'Kayak': '#1565C0', 'Canoë': '#6A1B9A',
-        'H': '#1B5E20', 'F': '#880E4F',
-        'Senior': '#37474F', 'U23': '#E65100', 'U18': '#BF360C',
-        'U16': '#4A148C', 'K1': '#00695C', 'K2': '#00838F',
-        'K4': '#006064', 'C1': '#4527A0', 'C2': '#283593',
-    }
-    def _badge(label):
-        color = BADGE_COLORS.get(label, '#455A64')
-        return ('<span style="background:{};color:#fff;border-radius:4px;'
-                'padding:1px 6px;font-size:0.68rem;font-weight:600;'
-                'margin-right:3px">{}</span>').format(color, label)
+    # ── 5. Plus de filtres (expander) ─────────────────────────────────────────
+    with st.expander('➕ Plus de filtres'):
+        # Catégorie
+        cats = _vals('categorie')
+        if cats:
+            st.markdown('**Catégorie**')
+            sel_cat = st.multiselect('Catégorie', cats, default=cats, key='f_cat',
+                                     label_visibility='collapsed')
+            if sel_cat:
+                df_filt = df_filt[df_filt['categorie'].isin(sel_cat) | (df_filt['categorie'].isin(['','nan']))]
+        # Bateau
+        bateaux = _vals('bateau')
+        if bateaux:
+            st.markdown('**Bateau**')
+            sel_bateau = st.multiselect('Bateau', bateaux, default=bateaux, key='f_bat',
+                                        label_visibility='collapsed')
+            if sel_bateau:
+                df_filt = df_filt[df_filt['bateau'].isin(sel_bateau) | (df_filt['bateau'].isin(['','nan']))]
+        # Distance
+        dists = _vals('distance')
+        if dists:
+            st.markdown('**Distance**')
+            sel_dist_filt = st.multiselect('Distance', dists, default=dists, key='f_dist',
+                                           label_visibility='collapsed')
+            if sel_dist_filt:
+                df_filt = df_filt[df_filt['distance'].isin(sel_dist_filt) | (df_filt['distance'].isin(['','nan']))]
+        # Type de course
+        types = _vals('type_course')
+        if types:
+            st.markdown('**Type de course**')
+            sel_type = st.multiselect('Type', types, default=types, key='f_type',
+                                      label_visibility='collapsed')
+            if sel_type:
+                df_filt = df_filt[df_filt['type_course'].isin(sel_type) | (df_filt['type_course'].isin(['','nan']))]
+        # Lieu
+        lieux = _vals('lieu')
+        if lieux:
+            st.markdown('**Lieu**')
+            sel_lieu = st.multiselect('Lieu', lieux, default=lieux, key='f_lieu',
+                                      label_visibility='collapsed')
+            if sel_lieu:
+                df_filt = df_filt[df_filt['lieu'].isin(sel_lieu) | (df_filt['lieu'].isin(['','nan']))]
 
-    if selected:
-        for ath in selected:
-            rows_ath = df_filt[df_filt['athlete'] == ath]
-            if rows_ath.empty:
-                continue
-            r = rows_ath.iloc[0]
-            badges = ''
-            for field in ['discipline', 'sexe', 'bateau', 'categorie']:
-                val = str(r.get(field, '')).strip()
-                if val:
-                    badges += _badge(val)
-            if badges:
-                st.markdown(
-                    '<div style="margin:1px 0 4px 0;line-height:1.8">'
-                    '<span style="font-size:0.75rem;color:#90A4AE">{}</span> {}'
-                    '</div>'.format(ath.split()[0], badges),
-                    unsafe_allow_html=True)
-
-    # ── 7. Épreuve ────────────────────────────────────────────────────────────
+    # ── 6. Épreuve ────────────────────────────────────────────────────────────
     st.markdown('**Épreuve**')
-    all_distances = sorted(df_filt['distance'].dropna().unique().tolist()) if not df_filt.empty else ['250m']
+    all_distances = sorted(df_filt['distance'].replace('',float('nan')).dropna().unique().tolist()) if not df_filt.empty else ['250m']
     distance = st.selectbox('Distance', all_distances, label_visibility='collapsed')
 
-    # ── 8. Résolution automatique : session la plus récente par athlète ───────
+    # ── 7. Session : résolution automatique (session la plus récente) ─────────
     ATHLETES_FILES = {}
     session_labels = {}
     for ath in selected:
@@ -2048,7 +2099,6 @@ with st.sidebar:
         chosen = sessions[-1]
         ATHLETES_FILES[ath] = chosen['fichier']
         session_labels[ath] = chosen['label']
-
     st.divider()
     st.markdown('**Filtres**')
     d_max   = 2000 if distance=='2000m' else 250
@@ -2067,10 +2117,15 @@ with st.sidebar:
         st.warning('Début > Fin — vérifiez les numéros de coups.')
 
     st.divider()
-    st.markdown('**Fenêtre signal**',
-                help='Ajuste la portion du signal affichée dans l\'onglet Signal')
-    t_start = st.slider('Début zoom (s)', 0.0, 120.0, 3.0, 0.5)
-    t_dur   = st.slider('Durée fenêtre (s)', 2.0, 15.0, 5.0, 0.5)
+    _is_admin = st.session_state.get('username', '') == 'admin'
+    if _is_admin:
+        st.markdown('**Fenêtre signal**',
+                    help='Ajuste la portion du signal affichée dans l\'onglet Signal')
+        t_start = st.slider('Début zoom (s)', 0.0, 120.0, 3.0, 0.5)
+        t_dur   = st.slider('Durée fenêtre (s)', 2.0, 15.0, 5.0, 0.5)
+    else:
+        t_start = 3.0
+        t_dur   = 5.0
 
     roll_w = 15  # valeur fixe (paramètre interne)
 
