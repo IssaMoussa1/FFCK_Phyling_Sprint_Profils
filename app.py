@@ -1954,26 +1954,7 @@ with st.sidebar:
         return sorted(df_filt[col].replace('nan','').replace('',float('nan'))
                       .dropna().unique().tolist())
 
-    # ── 1. Sexe ───────────────────────────────────────────────────────────────
-    sexes = _vals('sexe')
-    if sexes:
-        st.markdown('**Sexe**')
-        sel_sexe = st.multiselect('Sexe', sexes, default=sexes, key='f_sexe',
-                                  label_visibility='collapsed')
-        if sel_sexe:
-            df_filt = df_filt[df_filt['sexe'].isin(sel_sexe) | (df_filt['sexe'].isin(['','nan']))]
-
-    # ── 2. Discipline ─────────────────────────────────────────────────────────
-    disciplines = _vals('discipline')
-    if disciplines:
-        st.markdown('**Discipline**')
-        sel_discipline = st.multiselect('Discipline', disciplines,
-                                        default=disciplines, key='f_disc',
-                                        label_visibility='collapsed')
-        if sel_discipline:
-            df_filt = df_filt[df_filt['discipline'].isin(sel_discipline) | (df_filt['discipline'].isin(['','nan']))]
-
-    # ── 3. Calendrier + filtre date ───────────────────────────────────────────
+    # ── Calendrier + filtre date ──────────────────────────────────────────────────
     st.markdown('**Date**')
     from datetime import datetime as _dt, date as _date
     import streamlit.components.v1 as _components
@@ -1995,7 +1976,6 @@ with st.sidebar:
             st.session_state['cal_month_idx'] = len(all_months) - 1
 
         cal_idx = st.session_state['cal_month_idx']
-
         col_prev, col_mid, col_next = st.columns([1, 4, 1])
         with col_prev:
             if st.button('‹', key='cal_prev', disabled=(cal_idx == 0),
@@ -2011,16 +1991,28 @@ with st.sidebar:
 
         cur_year, cur_month = all_months[st.session_state['cal_month_idx']]
 
-        # Construire date_data pour les tooltips
-        date_data = {}
+        # date_data pour tooltips : {date: [(athlete, distance, lieu), ...]}
+        # Agréger par date + athlète : regrouper les distances sur une ligne
+        date_data_raw = {}
         for _, row in df_filt.iterrows():
             try:
-                d = _dt.strptime(str(row['date']), '%Y-%m-%d').date()
-                date_data.setdefault(d, []).append(
-                    (str(row['athlete']), str(row['distance']))
-                )
+                d    = _dt.strptime(str(row['date']), '%Y-%m-%d').date()
+                ath  = str(row['athlete'])
+                dist = str(row.get('distance', '')) or '?'
+                lieu = str(row.get('lieu', ''))
+                key  = (d, ath, lieu)
+                date_data_raw.setdefault(key, []).append(dist)
             except Exception:
                 pass
+        # Construire date_data final : {date: [lignes tooltip]}
+        date_data = {}
+        for (d, ath, lieu), dists_list in date_data_raw.items():
+            short = ' / '.join(p.split()[0] for p in ath.split('/'))
+            dists_str = ', '.join(sorted(set(dists_list)))
+            entry = '{} · {}{}'.format(short, dists_str,
+                                       ' · ' + lieu if lieu else '')
+            date_data.setdefault(d, set()).add(entry)
+        date_data = {d: sorted(v) for d, v in date_data.items()}
 
         cal_html = render_calendar(unique_dates, cur_year, cur_month, date_data)
         if cal_html:
@@ -2034,14 +2026,33 @@ with st.sidebar:
                              for d in sel_dates]
             df_filt = df_filt[df_filt['date'].isin(sel_dates_iso) | (df_filt['date'].isin(['','nan']))]
 
-    # ── 4. Athlètes ───────────────────────────────────────────────────────────
+    # ── Sexe ──────────────────────────────────────────────────────────────────
+    sexes = _vals('sexe')
+    if sexes:
+        st.markdown('**Sexe**')
+        sel_sexe = st.multiselect('Sexe', sexes, default=sexes, key='f_sexe',
+                                  label_visibility='collapsed')
+        if sel_sexe:
+            df_filt = df_filt[df_filt['sexe'].isin(sel_sexe) | (df_filt['sexe'].isin(['','nan']))]
+
+    # ── Discipline ────────────────────────────────────────────────────────────
+    disciplines = _vals('discipline')
+    if disciplines:
+        st.markdown('**Discipline**')
+        sel_discipline = st.multiselect('Discipline', disciplines,
+                                        default=disciplines, key='f_disc',
+                                        label_visibility='collapsed')
+        if sel_discipline:
+            df_filt = df_filt[df_filt['discipline'].isin(sel_discipline) | (df_filt['discipline'].isin(['','nan']))]
+
+    # ── Athlètes ──────────────────────────────────────────────────────────────
     st.markdown('**Athlètes**')
     all_athletes = sorted(df_filt['athlete'].dropna().unique().tolist())
     selected = st.multiselect('Sélectionner', all_athletes,
                               default=all_athletes[:min(3, len(all_athletes))],
                               key='sel_athletes')
 
-    # ── 5. Plus de filtres (expander) ─────────────────────────────────────────
+    # ── Plus de filtres ───────────────────────────────────────────────────────
     with st.expander('➕ Plus de filtres'):
         # Catégorie
         cats = _vals('categorie')
@@ -2084,12 +2095,12 @@ with st.sidebar:
             if sel_lieu:
                 df_filt = df_filt[df_filt['lieu'].isin(sel_lieu) | (df_filt['lieu'].isin(['','nan']))]
 
-    # ── 6. Épreuve ────────────────────────────────────────────────────────────
+    # ── Épreuve ───────────────────────────────────────────────────────────────
     st.markdown('**Épreuve**')
-    all_distances = sorted(df_filt['distance'].replace('',float('nan')).dropna().unique().tolist()) if not df_filt.empty else ['250m']
+    all_distances = sorted(df_filt['distance'].replace('', float('nan')).dropna().unique().tolist()) if not df_filt.empty else ['250m']
     distance = st.selectbox('Distance', all_distances, label_visibility='collapsed')
 
-    # ── 7. Session : résolution automatique (session la plus récente) ─────────
+    # ── Session : résolution automatique ──────────────────────────────────────
     ATHLETES_FILES = {}
     session_labels = {}
     for ath in selected:
@@ -2099,23 +2110,6 @@ with st.sidebar:
         chosen = sessions[-1]
         ATHLETES_FILES[ath] = chosen['fichier']
         session_labels[ath] = chosen['label']
-    st.divider()
-    st.markdown('**Filtres**')
-    d_max   = 2000 if distance=='2000m' else 250
-    d_range = st.slider('Fenêtre de distance (m)', 0, d_max, (0, d_max), 10)
-
-    # Compteur numérique pour les coups (remplace le slider)
-    st.markdown('**Sélection des coups**')
-    col_lo, col_hi = st.columns(2)
-    with col_lo:
-        s_lo = st.number_input('Coup début', min_value=1, max_value=400,
-                               value=1, step=1, help='Numéro du premier coup à inclure')
-    with col_hi:
-        s_hi = st.number_input('Coup fin', min_value=1, max_value=400,
-                               value=400, step=1, help='Numéro du dernier coup à inclure')
-    if s_lo > s_hi:
-        st.warning('Début > Fin — vérifiez les numéros de coups.')
-
     st.divider()
     _is_admin = st.session_state.get('username', '') == 'admin'
     if _is_admin:
@@ -2130,27 +2124,19 @@ with st.sidebar:
     roll_w = 15  # valeur fixe (paramètre interne)
 
     # Paramètres détection avec aide détaillée
-    with st.expander('⚙️ Détection avancée  ℹ️'):
-        st.markdown(HELP_DETECTION)
-        st.divider()
-        fc = st.slider('Lissage fc (Hz)', 1.0, 8.0, FC_SMOOTH, 0.5,
-                       help='Fréquence de coupure du filtre passe-bas. Réduire si faux pics détectés.')
-        md = st.slider('Distance min entre pics (s)', 0.15, 0.5, MIN_DIST_S, 0.05,
-                       help='Durée minimale entre deux pics = 60/cadence_max')
-        mh = st.slider('Hauteur min du pic (m/s²)', 0.05, 1.0, MIN_PEAK_H, 0.05,
-                       help='Seuil pour ignorer les oscillations parasites')
+    fc, md, mh = FC_SMOOTH, MIN_DIST_S, MIN_PEAK_H  # paramètres fixes
 
     st.divider()
     st.markdown("""**Métriques — guide rapide**
-| Métrique | Signification |
+| Métrique | Ce que ça mesure |
 |---|---|
-| AUC+ | Impulsion propulsion |
-| abs(AUC-) | Impulsion freinage |
-| Sym ratio | abs(AUC-)/AUC+ (idéal < 0.7) |
-| RFD | Explosivité catch |
-| Jerk | Fluidité coup |
-| Pos. pic | Timing propulsion |
-| CV AUC+ | Consistance coup/coup |""")
+| AUC+ | Force de propulsion par coup |
+| AUC- | Freinage involontaire de la pagaie |
+| Sym ratio | Équilibre entre propulsion et freinage (idéal < 0.7) |
+| RFD | Rapidité de mise en puissance au départ du coup |
+| Jerk | Fluidité et régularité du mouvement |
+| Pos. pic | Moment où le coup est le plus fort (tôt ou tard) |
+| CV AUC+ | Régularité des coups sur toute la course |""")
 
 
 # ── CHARGEMENT ───────────────────────────────────────────────────────────────
