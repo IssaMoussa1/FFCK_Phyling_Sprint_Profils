@@ -169,6 +169,19 @@ def load_registre():
     else:
         df_reg = pd.DataFrame(columns=cols_all)
 
+    # Normaliser les dates au format YYYY-MM-DD
+    if 'date' in df_reg.columns:
+        def _fix_date(d):
+            if not d or str(d) in ('nan', 'NaT', ''): return d
+            for fmt in ('%d/%m/%Y', '%Y-%m-%d', '%d-%m-%Y'):
+                try:
+                    from datetime import datetime as _dtt
+                    return _dtt.strptime(str(d).strip(), fmt).strftime('%Y-%m-%d')
+                except:
+                    pass
+            return d
+        df_reg['date'] = df_reg['date'].apply(_fix_date)
+
     # Supprimer les entrees dont le fichier n'existe pas sur disque
     if not df_reg.empty and 'fichier' in df_reg.columns:
         df_reg = df_reg[df_reg['fichier'].apply(
@@ -2007,7 +2020,8 @@ with st.sidebar:
         for (d, ath, lieu), dists_list in date_data_raw.items():
             short = ' / '.join(p.split()[0] for p in ath.split('/'))
             dists_str = ', '.join(sorted(set(dists_list)))
-            entry = '{} · {}{}'.format(short, dists_str, ' · ' + lieu if lieu else '')
+            lieu_clean = lieu if (lieu and lieu not in ('nan', 'NaN', 'None', '')) else ''
+            entry = '{} · {}{}'.format(short, dists_str, ' · ' + lieu_clean if lieu_clean else '')
             date_data.setdefault(d, set()).add(entry)
         date_data = {d: sorted(v) for d, v in date_data.items()}
 
@@ -2024,7 +2038,7 @@ with st.sidebar:
 
     # ── Sexe ──────────────────────────────────────────────────────────────────
     sexes = _vals('sexe')
-    if len(sexes) > 1:
+    if len(sexes) >= 1:
         st.markdown('**Sexe**')
         sel_sexe = st.multiselect('Sexe', sexes, default=sexes, key='f_sexe',
                                   label_visibility='collapsed')
@@ -2033,7 +2047,7 @@ with st.sidebar:
 
     # ── Discipline ────────────────────────────────────────────────────────────
     disciplines = _vals('discipline')
-    if len(disciplines) > 1:
+    if len(disciplines) >= 1:
         st.markdown('**Discipline**')
         sel_disc = st.multiselect('Discipline', disciplines, default=disciplines,
                                   key='f_disc', label_visibility='collapsed')
