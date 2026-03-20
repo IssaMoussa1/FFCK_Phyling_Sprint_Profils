@@ -427,9 +427,7 @@ def render_calendar(available_dates, year, month, date_data=None):
             has_data = day_date in days_with_data
             if has_data and date_data:
                 entries = date_data.get(day_date, [])
-                lines = []
-                for i, (ath, dist) in enumerate(entries[:3]):
-                    lines.append('{} · {}'.format(ath.split('/')[0].strip(), dist or '?'))
+                lines = list(entries[:3])
                 if len(entries) > 3:
                     lines.append('...')
                 tooltip = '&#10;'.join(lines)
