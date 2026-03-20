@@ -1947,16 +1947,18 @@ with st.sidebar:
 
     df_filt = df_registre.copy()
 
-    # ── Helper : valeurs propres (sans nan/vide) ─────────────────────────────────
-    def _vals(col):
-        return sorted(df_filt[col].replace('nan','').replace('',float('nan'))
-                      .dropna().unique().tolist())
-
-    # ── Calendrier + filtre date ──────────────────────────────────────────────────
-    st.markdown('**Date**')
-    from datetime import datetime as _dt, date as _date
+    from datetime import datetime as _dt
     import streamlit.components.v1 as _components
 
+    # Helper : valeurs propres d'une colonne (sans vide/nan)
+    def _vals(col):
+        if col not in df_filt.columns:
+            return []
+        return sorted(df_filt[col].replace('nan', '').replace('', float('nan'))
+                      .dropna().unique().tolist())
+
+    # ── Calendrier + filtre date ──────────────────────────────────────────────
+    st.markdown('**Date**')
     all_dates_str = df_filt['date'].replace('', float('nan')).dropna().unique().tolist()
     parsed_dates  = []
     for d in all_dates_str:
@@ -1987,10 +1989,9 @@ with st.sidebar:
                 st.session_state['cal_month_idx'] += 1
                 st.rerun()
 
-        cur_year, cur_month = all_months[st.session_state['cal_month_idx']]
+        cur_year, cur_month = all_months[cal_idx]
 
-        # date_data pour tooltips : {date: [(athlete, distance, lieu), ...]}
-        # Agréger par date + athlète : regrouper les distances sur une ligne
+        # Construire tooltips : une ligne par athlète+lieu, distances regroupées
         date_data_raw = {}
         for _, row in df_filt.iterrows():
             try:
@@ -2002,13 +2003,11 @@ with st.sidebar:
                 date_data_raw.setdefault(key, []).append(dist)
             except Exception:
                 pass
-        # Construire date_data final : {date: [lignes tooltip]}
         date_data = {}
         for (d, ath, lieu), dists_list in date_data_raw.items():
             short = ' / '.join(p.split()[0] for p in ath.split('/'))
             dists_str = ', '.join(sorted(set(dists_list)))
-            entry = '{} · {}{}'.format(short, dists_str,
-                                       ' · ' + lieu if lieu else '')
+            entry = '{} · {}{}'.format(short, dists_str, ' · ' + lieu if lieu else '')
             date_data.setdefault(d, set()).add(entry)
         date_data = {d: sorted(v) for d, v in date_data.items()}
 
@@ -2020,90 +2019,92 @@ with st.sidebar:
         sel_dates   = st.multiselect('Filtrer par date', date_labels,
                                      default=date_labels, key='f_date')
         if sel_dates:
-            sel_dates_iso = [_dt.strptime(d, '%d/%m/%Y').strftime('%Y-%m-%d')
-                             for d in sel_dates]
-            df_filt = df_filt[df_filt['date'].isin(sel_dates_iso) | (df_filt['date'].isin(['','nan']))]
+            sel_iso = [_dt.strptime(d, '%d/%m/%Y').strftime('%Y-%m-%d') for d in sel_dates]
+            df_filt = df_filt[df_filt['date'].isin(sel_iso) | df_filt['date'].isin(['', 'nan'])]
 
     # ── Sexe ──────────────────────────────────────────────────────────────────
     sexes = _vals('sexe')
-    if sexes:
+    if len(sexes) > 1:
         st.markdown('**Sexe**')
         sel_sexe = st.multiselect('Sexe', sexes, default=sexes, key='f_sexe',
                                   label_visibility='collapsed')
         if sel_sexe:
-            df_filt = df_filt[df_filt['sexe'].isin(sel_sexe) | (df_filt['sexe'].isin(['','nan']))]
+            df_filt = df_filt[df_filt['sexe'].isin(sel_sexe) | df_filt['sexe'].isin(['', 'nan'])]
 
     # ── Discipline ────────────────────────────────────────────────────────────
     disciplines = _vals('discipline')
-    if disciplines:
+    if len(disciplines) > 1:
         st.markdown('**Discipline**')
-        sel_discipline = st.multiselect('Discipline', disciplines,
-                                        default=disciplines, key='f_disc',
-                                        label_visibility='collapsed')
-        if sel_discipline:
-            df_filt = df_filt[df_filt['discipline'].isin(sel_discipline) | (df_filt['discipline'].isin(['','nan']))]
+        sel_disc = st.multiselect('Discipline', disciplines, default=disciplines,
+                                  key='f_disc', label_visibility='collapsed')
+        if sel_disc:
+            df_filt = df_filt[df_filt['discipline'].isin(sel_disc) | df_filt['discipline'].isin(['', 'nan'])]
+
+    # ── Épreuve ───────────────────────────────────────────────────────────────
+    st.markdown('**Épreuve**')
+    all_dist_vals = sorted(df_filt['distance'].replace('', float('nan')).dropna().unique().tolist()) if not df_filt.empty else ['250m']
+    # Valeur par défaut : distance la plus fréquente dans le registre filtré
+    if all_dist_vals:
+        freq = df_filt['distance'].value_counts()
+        default_dist = freq.index[0] if not freq.empty else all_dist_vals[0]
+        default_idx  = all_dist_vals.index(default_dist) if default_dist in all_dist_vals else 0
+    else:
+        default_idx = 0
+    distance = st.selectbox('Distance', all_dist_vals, index=default_idx,
+                            label_visibility='collapsed')
 
     # ── Athlètes ──────────────────────────────────────────────────────────────
     st.markdown('**Athlètes**')
-    all_athletes = sorted(df_filt['athlete'].dropna().unique().tolist())
+    # N'afficher que les athlètes qui ont un fichier pour la distance sélectionnée
+    df_with_dist = df_filt[
+        (df_filt['distance'] == distance) | (df_filt['distance'].isin(['', 'nan']))
+    ]
+    all_athletes = sorted(df_with_dist['athlete'].dropna().unique().tolist())
     selected = st.multiselect('Sélectionner', all_athletes,
                               default=all_athletes[:min(3, len(all_athletes))],
                               key='sel_athletes')
 
     # ── Plus de filtres ───────────────────────────────────────────────────────
     with st.expander('➕ Plus de filtres'):
-        # Catégorie
         cats = _vals('categorie')
         if cats:
             st.markdown('**Catégorie**')
             sel_cat = st.multiselect('Catégorie', cats, default=cats, key='f_cat',
                                      label_visibility='collapsed')
             if sel_cat:
-                df_filt = df_filt[df_filt['categorie'].isin(sel_cat) | (df_filt['categorie'].isin(['','nan']))]
-        # Bateau
+                df_filt = df_filt[df_filt['categorie'].isin(sel_cat) | df_filt['categorie'].isin(['', 'nan'])]
+
         bateaux = _vals('bateau')
         if bateaux:
             st.markdown('**Bateau**')
-            sel_bateau = st.multiselect('Bateau', bateaux, default=bateaux, key='f_bat',
-                                        label_visibility='collapsed')
-            if sel_bateau:
-                df_filt = df_filt[df_filt['bateau'].isin(sel_bateau) | (df_filt['bateau'].isin(['','nan']))]
-        # Distance
-        dists = _vals('distance')
-        if dists:
-            st.markdown('**Distance**')
-            sel_dist_filt = st.multiselect('Distance', dists, default=dists, key='f_dist',
-                                           label_visibility='collapsed')
-            if sel_dist_filt:
-                df_filt = df_filt[df_filt['distance'].isin(sel_dist_filt) | (df_filt['distance'].isin(['','nan']))]
-        # Type de course
+            sel_bat = st.multiselect('Bateau', bateaux, default=bateaux, key='f_bat',
+                                     label_visibility='collapsed')
+            if sel_bat:
+                df_filt = df_filt[df_filt['bateau'].isin(sel_bat) | df_filt['bateau'].isin(['', 'nan'])]
+
         types = _vals('type_course')
         if types:
             st.markdown('**Type de course**')
             sel_type = st.multiselect('Type', types, default=types, key='f_type',
                                       label_visibility='collapsed')
             if sel_type:
-                df_filt = df_filt[df_filt['type_course'].isin(sel_type) | (df_filt['type_course'].isin(['','nan']))]
-        # Lieu
+                df_filt = df_filt[df_filt['type_course'].isin(sel_type) | df_filt['type_course'].isin(['', 'nan'])]
+
         lieux = _vals('lieu')
         if lieux:
             st.markdown('**Lieu**')
             sel_lieu = st.multiselect('Lieu', lieux, default=lieux, key='f_lieu',
                                       label_visibility='collapsed')
             if sel_lieu:
-                df_filt = df_filt[df_filt['lieu'].isin(sel_lieu) | (df_filt['lieu'].isin(['','nan']))]
+                df_filt = df_filt[df_filt['lieu'].isin(sel_lieu) | df_filt['lieu'].isin(['', 'nan'])]
 
-    # ── Épreuve ───────────────────────────────────────────────────────────────
-    st.markdown('**Épreuve**')
-    all_distances = sorted(df_filt['distance'].replace('', float('nan')).dropna().unique().tolist()) if not df_filt.empty else ['250m']
-    distance = st.selectbox('Distance', all_distances, label_visibility='collapsed')
-
-    # ── Session : résolution automatique ──────────────────────────────────────
+    # ── Résolution des fichiers (session la plus récente par athlète) ──────────
     ATHLETES_FILES = {}
     session_labels = {}
     for ath in selected:
         sessions = get_sessions_for_athlete(df_filt, ath, distance)
         if not sessions:
+            st.sidebar.caption('⚠️ {} — pas de fichier {}'.format(ath.split()[0], distance))
             continue
         chosen = sessions[-1]
         ATHLETES_FILES[ath] = chosen['fichier']
