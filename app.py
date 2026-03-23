@@ -156,7 +156,39 @@ def load_registre():
 
     if os.path.exists(REGISTRE):
         try:
-            df_reg = pd.read_csv(REGISTRE, dtype=str, encoding='utf-8').fillna('')
+            # Lecture robuste : gère UTF-8, UTF-8 BOM, latin-1, virgule ou point-virgule
+            for enc in ('utf-8-sig', 'utf-8', 'latin-1'):
+                try:
+                    df_reg = pd.read_csv(REGISTRE, dtype=str, encoding=enc,
+                                         sep=None, engine='python').fillna('')
+                    # Nettoyer BOM sur les noms de colonnes
+                    df_reg.columns = [c.lstrip('\ufeff').strip() for c in df_reg.columns]
+                    break
+                except UnicodeDecodeError:
+                    continue
+            else:
+                df_reg = pd.DataFrame(columns=cols_all)
+
+            # Corriger encodage cassé (Relève → RelÃ¨ve)
+            def _fix_enc(x):
+                if not isinstance(x, str): return x
+                try: return x.encode('latin-1').decode('utf-8')
+                except: return x
+            for col in df_reg.columns:
+                df_reg[col] = df_reg[col].apply(_fix_enc)
+
+            # Normaliser les dates DD/MM/YYYY → YYYY-MM-DD
+            def _fix_date(d):
+                if not d or str(d) in ('nan','NaT',''): return d
+                for fmt in ('%d/%m/%Y', '%Y-%m-%d', '%d-%m-%Y'):
+                    try:
+                        from datetime import datetime as _dtt
+                        return _dtt.strptime(str(d).strip(), fmt).strftime('%Y-%m-%d')
+                    except: pass
+                return d
+            if 'date' in df_reg.columns:
+                df_reg['date'] = df_reg['date'].apply(_fix_date)
+
         except Exception:
             df_reg = pd.DataFrame(columns=cols_all)
         # Ajouter toutes les colonnes manquantes
@@ -415,17 +447,21 @@ def enrich_registre_from_zips(df_reg):
     return df_reg
 
 
-def render_calendar(available_dates, year, month, date_data=None):
+def render_calendar(available_dates, year, month, date_data=None, selected_dates=None):
     """
-    Mini-calendrier HTML interactif. Les jours avec données ont un point bleu
-    et une infobulle au survol listant athlète / distance / date.
-    date_data : dict {date: [(athlete, distance), ...]}
+    Calendrier HTML interactif. Cliquer sur un jour le sélectionne/désélectionne.
+    Les jours sélectionnés sont mis en évidence.
+    Communique avec Streamlit via postMessage → window.parent.
     """
     import calendar as _cal
     MONTHS = ['','Janvier','Février','Mars','Avril','Mai','Juin',
               'Juillet','Août','Septembre','Octobre','Novembre','Décembre']
 
+    if selected_dates is None:
+        selected_dates = set(available_dates)
+
     days_with_data = {d for d in available_dates if d.year == year and d.month == month}
+    sel_strs = {d.strftime('%Y-%m-%d') for d in selected_dates}
     cal = _cal.monthcalendar(year, month)
 
     rows = ""
@@ -436,44 +472,54 @@ def render_calendar(available_dates, year, month, date_data=None):
                 cells += '<td></td>'
                 continue
             from datetime import date as _date
-            day_date = _date(year, month, d)
-            has_data = day_date in days_with_data
-            if has_data and date_data:
-                entries = date_data.get(day_date, [])
-                lines = list(entries[:3])
-                if len(entries) > 3:
-                    lines.append('...')
-                tooltip = '&#10;'.join(lines)
+            day_date  = _date(year, month, d)
+            day_str   = day_date.strftime('%Y-%m-%d')
+            has_data  = day_date in days_with_data
+            is_sel    = day_str in sel_strs
+
+            if has_data:
+                entries = (date_data or {}).get(day_date, [])
+                tooltip_lines = list(entries[:4])
+                if len(entries) > 4:
+                    tooltip_lines.append('...')
+                tooltip = '&#10;'.join(tooltip_lines)
+                dot_color = '#1E88E5' if is_sel else '#546E7A'
+                bg        = '#1E3A5F' if is_sel else '#1A2332'
+                border    = '2px solid #1E88E5' if is_sel else '1px solid #2d3f55'
                 cells += (
-                    '<td class="cal-has-data" title="{}">'
-                    '{}<div class="cal-dot"></div></td>'
-                ).format(tooltip, d)
-            elif has_data:
-                cells += '<td class="cal-has-data">{}<div class="cal-dot"></div></td>'.format(d)
+                    '<td class="cal-has-data" data-date="{}" '
+                    'onclick="toggleDate(this)" title="{}" '
+                    'style="background:{};border:{};border-radius:6px;cursor:pointer">'
+                    '{}<div class="cal-dot" style="background:{}"></div></td>'
+                ).format(day_str, tooltip, bg, border, d, dot_color)
             else:
                 cells += '<td class="cal-day">{}</td>'.format(d)
         rows += '<tr>{}</tr>'.format(cells)
+
+    # Passer les dates sélectionnées au JS
+    sel_json = '[' + ','.join('"' + s + '"' for s in sorted(sel_strs)) + ']'
 
     html = """
 <style>
 .cal-wrap{{font-family:'DM Sans',sans-serif;width:100%;position:relative;}}
 .cal-title{{text-align:center;font-size:0.76rem;font-weight:700;
             color:#90CAF9;margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em}}
-.cal-table{{width:100%;border-collapse:collapse;font-size:0.72rem;}}
+.cal-table{{width:100%;border-collapse:separate;border-spacing:2px;font-size:0.72rem;}}
 .cal-table th{{color:#546E7A;text-align:center;padding:2px;font-weight:600;}}
-.cal-table td{{text-align:center;padding:2px 1px;color:#CFD8DC;cursor:default;
-               position:relative;}}
-.cal-has-data{{color:#FFFFFF;font-weight:700;cursor:pointer;}}
-.cal-dot{{width:5px;height:5px;border-radius:50%;background:#1E88E5;margin:1px auto 0;}}
+.cal-table td{{text-align:center;padding:3px 2px;color:#CFD8DC;}}
+.cal-has-data{{color:#FFFFFF;font-weight:700;transition:all .15s;}}
+.cal-has-data:hover{{opacity:0.85;}}
+.cal-dot{{width:5px;height:5px;border-radius:50%;margin:1px auto 0;transition:background .15s;}}
 .cal-day{{}}
-/* Tooltip natif amélioré via JS */
 .cal-tooltip{{
-  display:none;position:fixed;z-index:9999;
+  display:none;position:absolute;z-index:9999;
   background:#1A2332;border:1px solid #2d3f55;border-radius:8px;
   padding:8px 12px;font-size:0.72rem;color:#E3F2FD;
   box-shadow:0 4px 16px rgba(0,0,0,.5);
-  pointer-events:none;white-space:pre-line;min-width:160px;max-width:220px;
+  pointer-events:none;white-space:pre-line;min-width:180px;max-width:260px;
+  left:110%;top:0;
 }}
+.cal-hint{{font-size:0.65rem;color:#546E7A;text-align:center;margin-top:4px;}}
 </style>
 <div class="cal-wrap">
   <div class="cal-title">{month_name} {year}</div>
@@ -481,30 +527,57 @@ def render_calendar(available_dates, year, month, date_data=None):
     <tr><th>L</th><th>M</th><th>M</th><th>J</th><th>V</th><th>S</th><th>D</th></tr>
     {rows}
   </table>
+  <div class="cal-hint">Cliquez sur un jour pour filtrer</div>
 </div>
-<div class="cal-tooltip" id="cal-tt"></div>
 <script>
+var selectedDates = {sel_json};
+
+function toggleDate(el) {{
+  var d = el.getAttribute('data-date');
+  var idx = selectedDates.indexOf(d);
+  if (idx === -1) {{
+    selectedDates.push(d);
+    el.style.background = '#1E3A5F';
+    el.style.border = '2px solid #1E88E5';
+    el.querySelector('.cal-dot').style.background = '#1E88E5';
+  }} else {{
+    selectedDates.splice(idx, 1);
+    el.style.background = '#1A2332';
+    el.style.border = '1px solid #2d3f55';
+    el.querySelector('.cal-dot').style.background = '#546E7A';
+  }}
+  // Envoyer la sélection à Streamlit via query params
+  var joined = selectedDates.sort().join(',');
+  window.parent.postMessage({{
+    type: 'streamlit:setComponentValue',
+    value: joined
+  }}, '*');
+  // Fallback : modifier l'URL parent
+  try {{
+    var url = new URL(window.parent.location.href);
+    url.searchParams.set('cal_dates', joined);
+    window.parent.history.replaceState({{}}, '', url.toString());
+    // Déclencher un event pour que Streamlit recharge
+    window.parent.dispatchEvent(new Event('popstate'));
+  }} catch(e) {{}}
+}}
+
+// Tooltip
 (function(){{
-  var tt = document.getElementById('cal-tt');
   document.querySelectorAll('.cal-has-data[title]').forEach(function(el){{
-    el.addEventListener('mouseenter', function(e){{
-      tt.textContent = el.getAttribute('title').replace(/&#10;/g,'\n');
-      tt.style.display = 'block';
-      tt.style.left = (e.clientX + 12) + 'px';
-      tt.style.top  = (e.clientY - 10) + 'px';
-    }});
-    el.addEventListener('mousemove', function(e){{
-      tt.style.left = (e.clientX + 12) + 'px';
-      tt.style.top  = (e.clientY - 10) + 'px';
-    }});
-    el.addEventListener('mouseleave', function(){{
-      tt.style.display = 'none';
-    }});
+    var tt = document.createElement('div');
+    tt.className = 'cal-tooltip';
+    tt.textContent = el.getAttribute('title').replace(/&#10;/g,'\n');
+    el.style.position = 'relative';
+    el.appendChild(tt);
+    el.addEventListener('mouseenter', function(){{ tt.style.display = 'block'; }});
+    el.addEventListener('mouseleave', function(){{ tt.style.display = 'none'; }});
   }});
 }})();
 </script>
-""".format(month_name=MONTHS[month], year=year, rows=rows)
+""".format(month_name=MONTHS[month], year=year, rows=rows, sel_json=sel_json)
     return html
+
 
 # ── Cache pickle ──────────────────────────────────────────────────────────────
 
@@ -1970,8 +2043,12 @@ with st.sidebar:
         return sorted(df_filt[col].replace('nan', '').replace('', float('nan'))
                       .dropna().unique().tolist())
 
-    # ── Calendrier + filtre date ──────────────────────────────────────────────
+    # ── Calendrier + filtre date ────────────────────────────────────────────────
     st.markdown('**Date**')
+    from datetime import datetime as _dt
+    import streamlit.components.v1 as _components
+    import calendar as _cal
+
     all_dates_str = df_filt['date'].replace('', float('nan')).dropna().unique().tolist()
     parsed_dates  = []
     for d in all_dates_str:
@@ -1984,11 +2061,12 @@ with st.sidebar:
         unique_dates = sorted(set(parsed_dates))
         all_months   = sorted(set((d.year, d.month) for d in unique_dates))
 
+        # Navigation mois
         if ('cal_month_idx' not in st.session_state or
                 st.session_state['cal_month_idx'] >= len(all_months)):
             st.session_state['cal_month_idx'] = len(all_months) - 1
-
         cal_idx = st.session_state['cal_month_idx']
+
         col_prev, col_mid, col_next = st.columns([1, 4, 1])
         with col_prev:
             if st.button('‹', key='cal_prev', disabled=(cal_idx == 0),
@@ -2003,16 +2081,20 @@ with st.sidebar:
                 st.rerun()
 
         cur_year, cur_month = all_months[cal_idx]
+        MONTHS_FR = ['','Janvier','Février','Mars','Avril','Mai','Juin',
+                     'Juillet','Août','Septembre','Octobre','Novembre','Décembre']
+        # titre géré par render_calendar
 
-        # Construire tooltips : une ligne par athlète+lieu, distances regroupées
+        # Construire tooltips
         date_data_raw = {}
         for _, row in df_filt.iterrows():
             try:
-                d    = _dt.strptime(str(row['date']), '%Y-%m-%d').date()
-                ath  = str(row['athlete'])
-                dist = str(row.get('distance', '')) or '?'
-                lieu = str(row.get('lieu', ''))
-                key  = (d, ath, lieu)
+                d     = _dt.strptime(str(row['date']), '%Y-%m-%d').date()
+                ath   = str(row['athlete'])
+                dist  = str(row.get('distance', '')) or '?'
+                lieu  = str(row.get('lieu', ''))
+                lieu  = lieu if lieu not in ('', 'nan', 'NaN', 'None') else ''
+                key   = (d, ath, lieu)
                 date_data_raw.setdefault(key, []).append(dist)
             except Exception:
                 pass
@@ -2020,27 +2102,63 @@ with st.sidebar:
         for (d, ath, lieu), dists_list in date_data_raw.items():
             short = ' / '.join(p.split()[0] for p in ath.split('/'))
             dists_str = ', '.join(sorted(set(dists_list)))
-            lieu_clean = lieu if (lieu and lieu not in ('nan', 'NaN', 'None', '')) else ''
-            entry = '{} · {}{}'.format(short, dists_str, ' · ' + lieu_clean if lieu_clean else '')
+            entry = '{} · {}{}'.format(short, dists_str, ' · ' + lieu if lieu else '')
             date_data.setdefault(d, set()).add(entry)
         date_data = {d: sorted(v) for d, v in date_data.items()}
 
-        cal_html = render_calendar(unique_dates, cur_year, cur_month, date_data)
+        # Dates avec données dans le mois affiché
+        days_this_month = sorted(
+            d for d in unique_dates if d.year == cur_year and d.month == cur_month
+        )
+
+        # Initialiser sélection (par défaut = toutes)
+        if 'cal_selected' not in st.session_state:
+            st.session_state['cal_selected'] = set(unique_dates)
+
+        # Calendrier visuel en HTML (non cliquable, juste indicateur)
+        cal_html = render_calendar(unique_dates, cur_year, cur_month,
+                                   date_data, st.session_state['cal_selected'])
         if cal_html:
-            _components.html(cal_html, height=160, scrolling=False)
+            _components.html(cal_html, height=175, scrolling=False)
 
-        date_labels = [d.strftime('%d/%m/%Y') for d in unique_dates]
-        sel_dates   = st.multiselect('Filtrer par date', date_labels,
-                                     default=date_labels, key='f_date')
-        if sel_dates:
-            sel_iso = [_dt.strptime(d, '%d/%m/%Y').strftime('%Y-%m-%d') for d in sel_dates]
+        # Boutons cliquables SOUS le calendrier — un par jour avec données
+        if days_this_month:
+            st.markdown('<style>div[data-testid="stHorizontalBlock"]{gap:1px!important}div[data-testid="column"]{padding:0!important}div[data-testid="column"] button{padding:1px 2px!important;font-size:0.55rem!important;min-height:16px!important;line-height:1!important;border-radius:3px!important}</style>', unsafe_allow_html=True)
+            chunks = [days_this_month[i:i+6] for i in range(0, len(days_this_month), 6)]
+            for chunk in chunks:
+                btn_cols = st.columns([1]*len(chunk))
+                for col_b, day_d in zip(btn_cols, chunk):
+                    is_sel   = day_d in st.session_state['cal_selected']
+                    btn_type = 'primary' if is_sel else 'secondary'
+                    if col_b.button(day_d.strftime('%d/%m'), key='day_' + day_d.isoformat(),
+                                    use_container_width=True, type=btn_type):
+                        sel = st.session_state['cal_selected']
+                        if day_d in sel: sel.discard(day_d)
+                        else: sel.add(day_d)
+                        st.rerun()
+
+        # Boutons Tout / Aucun
+        col_all, col_none = st.columns(2)
+        with col_all:
+            if st.button('Tout', key='cal_all', use_container_width=True):
+                st.session_state['cal_selected'] = set(unique_dates)
+                st.rerun()
+        with col_none:
+            if st.button('Aucun', key='cal_none', use_container_width=True):
+                st.session_state['cal_selected'] = set()
+                st.rerun()
+
+        # Appliquer le filtre
+        sel_set = st.session_state['cal_selected']
+        if sel_set:
+            sel_iso = {d.strftime('%Y-%m-%d') for d in sel_set}
             df_filt = df_filt[df_filt['date'].isin(sel_iso) | df_filt['date'].isin(['', 'nan'])]
-
+        # Si aucune date → pas de filtre (tout afficher)
     # ── Sexe ──────────────────────────────────────────────────────────────────
     sexes = _vals('sexe')
     if len(sexes) >= 1:
         st.markdown('**Sexe**')
-        sel_sexe = st.multiselect('Sexe', sexes, default=sexes, key='f_sexe',
+        sel_sexe = st.multiselect('Sexe', sexes, default=[], key='f_sexe',
                                   label_visibility='collapsed')
         if sel_sexe:
             df_filt = df_filt[df_filt['sexe'].isin(sel_sexe) | df_filt['sexe'].isin(['', 'nan'])]
@@ -2049,7 +2167,7 @@ with st.sidebar:
     disciplines = _vals('discipline')
     if len(disciplines) >= 1:
         st.markdown('**Discipline**')
-        sel_disc = st.multiselect('Discipline', disciplines, default=disciplines,
+        sel_disc = st.multiselect('Discipline', disciplines, default=[],
                                   key='f_disc', label_visibility='collapsed')
         if sel_disc:
             df_filt = df_filt[df_filt['discipline'].isin(sel_disc) | df_filt['discipline'].isin(['', 'nan'])]
@@ -2057,14 +2175,13 @@ with st.sidebar:
     # ── Épreuve ───────────────────────────────────────────────────────────────
     st.markdown('**Épreuve**')
     all_dist_vals = sorted(df_filt['distance'].replace('', float('nan')).dropna().unique().tolist()) if not df_filt.empty else ['250m']
-    # Valeur par défaut : distance la plus fréquente dans le registre filtré
     if all_dist_vals:
         freq = df_filt['distance'].value_counts()
         default_dist = freq.index[0] if not freq.empty else all_dist_vals[0]
         default_idx  = all_dist_vals.index(default_dist) if default_dist in all_dist_vals else 0
     else:
         default_idx = 0
-    distance = st.selectbox('Distance', all_dist_vals, index=default_idx,
+    distance = st.selectbox('Épreuve', all_dist_vals, index=default_idx,
                             label_visibility='collapsed')
 
     # ── Athlètes ──────────────────────────────────────────────────────────────
@@ -2074,9 +2191,10 @@ with st.sidebar:
         (df_filt['distance'] == distance) | (df_filt['distance'].isin(['', 'nan']))
     ]
     all_athletes = sorted(df_with_dist['athlete'].dropna().unique().tolist())
-    selected = st.multiselect('Sélectionner', all_athletes,
-                              default=all_athletes[:min(3, len(all_athletes))],
-                              key='sel_athletes')
+    selected = st.multiselect('', all_athletes,
+                              default=[],
+                              key='sel_athletes',
+                              label_visibility='collapsed')
 
     # ── Plus de filtres ───────────────────────────────────────────────────────
     with st.expander('➕ Plus de filtres'):
