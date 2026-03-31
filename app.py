@@ -43,28 +43,41 @@ _GDRIVE_LOCAL    = os.path.join(os.path.expanduser("~"), ".phyling_gdrive_cache"
 
 @st.cache_resource(show_spinner="📡 Synchronisation des données depuis Google Drive…")
 def _sync_gdrive():
-    import gdown
+    import gdown, traceback
     os.makedirs(_GDRIVE_LOCAL, exist_ok=True)
+
     try:
         gdown.download_folder(
             id=GDRIVE_FOLDER_ID,
             output=_GDRIVE_LOCAL,
-            quiet=True,
+            quiet=False,
             use_cookies=False,
         )
     except Exception:
-        pass
+        print("=== GDOWN ERROR ===")
+        traceback.print_exc()
+        print("===================")
+
     # gdown crée un sous-dossier nommé d'après le dossier Drive — on le détecte
     try:
+        entries = os.listdir(_GDRIVE_LOCAL)
+        print("=== GDRIVE LOCAL CONTENTS ===", entries)
         subdirs = [
             os.path.join(_GDRIVE_LOCAL, d)
-            for d in os.listdir(_GDRIVE_LOCAL)
+            for d in entries
             if os.path.isdir(os.path.join(_GDRIVE_LOCAL, d))
         ]
         if subdirs:
-            return subdirs[0]
+            best = max(subdirs, key=lambda d: len([
+                f for f in os.listdir(d) if f.endswith('.csv')
+            ]))
+            n_csv = len([f for f in os.listdir(best) if f.endswith('.csv')])
+            print(f"=== BEST SUBDIR: {best} ({n_csv} CSV) ===")
+            return best
     except Exception:
-        pass
+        print("=== SUBDIR ERROR ===")
+        traceback.print_exc()
+
     return _GDRIVE_LOCAL
 
 
