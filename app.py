@@ -37,10 +37,33 @@ warnings.filterwarnings('ignore')
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────────────────────
-DATA_DIR   = os.path.join(os.path.dirname(__file__), 'data')
-CACHE_DIR  = os.path.join(DATA_DIR, 'cache')
-REGISTRE   = os.path.join(DATA_DIR, 'registre.csv')
+GDRIVE_FOLDER_ID = "1Bs7SuBh5MsDyeYD_gEOE0F9fa7SQEYjL"
+_GDRIVE_LOCAL    = os.path.join(os.path.expanduser("~"), ".phyling_gdrive_cache")
 
+
+@st.cache_resource(show_spinner="📡 Synchronisation des données depuis Google Drive…")
+def _sync_gdrive():
+    """
+    Télécharge le contenu du dossier Google Drive dans un répertoire local persistant.
+    Utilise cache_resource : s'exécute une seule fois par cycle de vie du serveur.
+    """
+    import gdown
+    os.makedirs(_GDRIVE_LOCAL, exist_ok=True)
+    try:
+        gdown.download_folder(
+            id=GDRIVE_FOLDER_ID,
+            output=_GDRIVE_LOCAL,
+            quiet=True,
+            use_cookies=False,
+        )
+    except Exception:
+        pass  # Échec silencieux — on affiche un warning dans la sidebar
+    return _GDRIVE_LOCAL
+
+
+DATA_DIR  = _sync_gdrive()
+CACHE_DIR = os.path.join(DATA_DIR, 'cache')
+REGISTRE  = os.path.join(DATA_DIR, 'registre.csv')
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 
@@ -49,72 +72,58 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _parse_filename(fname):
-    """
-    Extrait (athlete, distance, date, heure, sel) depuis le nom de fichier.
-    Gère K1, K2 (deux noms séparés par -), distance absente, ancien format.
-    """
+    """Extrait athlete, distance, date depuis le nom de fichier. Robuste."""
     base = os.path.splitext(os.path.basename(fname))[0]
+    DIST_VALS = {'250', '500', '750', '1000', '2000'}
 
-    # ── Formats nouveaux : date YYYYMMDD_HHMMSS dans le nom ────────────────
     m_date = re.search(r'([0-9]{8})_([0-9]{6})', base)
     if m_date:
-        date_raw  = m_date.group(1)
-        heure_raw = m_date.group(2)
+        date_raw, heure_raw = m_date.group(1), m_date.group(2)
         date_str  = '{}-{}-{}'.format(date_raw[:4], date_raw[4:6], date_raw[6:])
         heure_str = '{}:{}'.format(heure_raw[:2], heure_raw[2:4])
-
-        # Noms avant la date, suffixe après
         name_part = base[:m_date.start()].strip('-_')
         suffix    = base[m_date.end():].strip('-_')
 
-        # Distance et numéro de sélection
-        m_dist = re.search(r'([0-9]+m)', suffix, re.IGNORECASE)
-        m_sel  = re.search(r'sel[_-]([0-9]+)', suffix, re.IGNORECASE)
-        dist   = m_dist.group(1) if m_dist else ''
-        sel    = m_sel.group(1)  if m_sel  else '1'
+        # Distance : XXXm explicite
+        m_dist = re.search(r'([0-9]+)m', suffix, re.IGNORECASE)
+        dist   = m_dist.group(1) + 'm' if m_dist else ''
 
-        # Noms : K2 = deux segments séparés par -
-        name_segments = [s.strip('_') for s in name_part.split('-') if s.strip('_')]
-        athletes = []
-        for seg in name_segments:
-            display = ' '.join(w.capitalize() for w in seg.split('_'))
-            athletes.append(display)
-        athlete = ' / '.join(athletes) if len(athletes) > 1 else (athletes[0] if athletes else '')
+        # sel_XXX quand XXX = distance connue
+        if not dist:
+            m_sd = re.search(r'sel[_-]([0-9]+)', suffix, re.IGNORECASE)
+            if m_sd and m_sd.group(1) in DIST_VALS:
+                dist = m_sd.group(1) + 'm'
 
+        # Nombre nu entre separateurs
+        if not dist:
+            for tok in re.split(r'[-_]', suffix):
+                if tok in DIST_VALS:
+                    dist = tok + 'm'
+                    break
+
+        m_sel = re.search(r'sel[_-]([0-9]+)', suffix, re.IGNORECASE)
+        sel   = m_sel.group(1) if m_sel else '1'
+
+        segs = [s.strip('_') for s in name_part.split('-') if s.strip('_')]
+        aths = [' '.join(w.capitalize() for w in s.split('_')) for s in segs]
+        athlete = ' / '.join(aths) if len(aths) > 1 else (aths[0] if aths else '')
         if not athlete:
             return None
+        return {'athlete': athlete, 'distance': dist, 'date': date_str,
+                'heure': heure_str, 'sel': sel, 'format': 'nouveau', 'n_athletes': len(aths)}
 
-        return {
-            'athlete':    athlete,
-            'distance':   dist,
-            'date':       date_str,
-            'heure':      heure_str,
-            'sel':        sel,
-            'format':     'nouveau',
-            'n_athletes': len(athletes),
-        }
-
-    # ── Format ancien : bavenkoff_viktor20260218_024153sel_250 ─────────────
-    m_old = re.match(
-        r'^([a-z][a-z0-9_]+?)([0-9]{8})_?([0-9]{6})sel[_-]([0-9]+)$',
-        base, re.IGNORECASE
-    )
+    m_old = re.match(r'^([a-z][a-z0-9_]+?)([0-9]{8})_?([0-9]{6})sel[_-]([0-9]+)$', base, re.IGNORECASE)
     if m_old:
         name_raw, date_raw, heure_raw, dist_raw = m_old.groups()
         athlete   = ' '.join(w.capitalize() for w in name_raw.strip('_').split('_'))
         date_str  = '{}-{}-{}'.format(date_raw[:4], date_raw[4:6], date_raw[6:])
         heure_str = '{}:{}'.format(heure_raw[:2], heure_raw[2:4])
-        return {
-            'athlete':    athlete,
-            'distance':   dist_raw + 'm',
-            'date':       date_str,
-            'heure':      heure_str,
-            'sel':        '1',
-            'format':     'ancien',
-            'n_athletes': 1,
-        }
-
+        dist      = dist_raw + 'm' if dist_raw in DIST_VALS else ''
+        return {'athlete': athlete, 'distance': dist, 'date': date_str,
+                'heure': heure_str, 'sel': '1' if dist else dist_raw,
+                'format': 'ancien', 'n_athletes': 1}
     return None
+
 
 def scan_data_dir():
     """
@@ -2025,6 +2034,21 @@ with st.sidebar:
     st.caption('Analyse des coups de pagaie · Maxi-Phyling')
     st.divider()
 
+    # Bouton de rafraîchissement des données depuis Drive
+    if st.button('🔄 Rafraîchir les données', use_container_width=True,
+                 help='Télécharge les nouveaux fichiers depuis Google Drive'):
+        st.cache_resource.clear()
+        st.cache_data.clear()
+        st.rerun()
+
+    # Vérification que le Drive a bien été synchronisé
+    _n_csv = len([f for f in os.listdir(DATA_DIR) if f.endswith('.csv')
+                  and f != 'registre.csv']) if os.path.isdir(DATA_DIR) else 0
+    if _n_csv == 0:
+        st.warning('⚠️ Aucun fichier CSV trouvé — vérifiez le dossier Google Drive.')
+    else:
+        st.caption(f'📂 {_n_csv} fichier(s) CSV chargé(s) depuis Drive')
+
     # Chargement dynamique depuis registre.csv + scan du dossier data/
     df_registre = load_registre()
     n_sessions  = len(df_registre)
@@ -2174,15 +2198,17 @@ with st.sidebar:
 
     # ── Épreuve ───────────────────────────────────────────────────────────────
     st.markdown('**Épreuve**')
-    all_dist_vals = sorted(df_filt['distance'].replace('', float('nan')).dropna().unique().tolist()) if not df_filt.empty else ['250m']
-    if all_dist_vals:
-        freq = df_filt['distance'].value_counts()
+    _dist_raw = df_filt['distance'].replace('', float('nan')).replace('None', float('nan')).dropna()
+    all_dist_vals = sorted(_dist_raw.unique().tolist()) if not df_filt.empty else ['250m']
+    if not all_dist_vals:
+        st.caption('Aucune épreuve — renseignez la distance dans le registre')
+        distance = ''
+    else:
+        freq = _dist_raw.value_counts()
         default_dist = freq.index[0] if not freq.empty else all_dist_vals[0]
         default_idx  = all_dist_vals.index(default_dist) if default_dist in all_dist_vals else 0
-    else:
-        default_idx = 0
-    distance = st.selectbox('Épreuve', all_dist_vals, index=default_idx,
-                            label_visibility='collapsed')
+        distance = st.selectbox('Distance', all_dist_vals, index=default_idx,
+                                label_visibility='collapsed')
 
     # ── Athlètes ──────────────────────────────────────────────────────────────
     st.markdown('**Athlètes**')
@@ -2235,8 +2261,8 @@ with st.sidebar:
     session_labels = {}
     for ath in selected:
         sessions = get_sessions_for_athlete(df_filt, ath, distance)
-        if not sessions:
-            st.sidebar.caption('⚠️ {} — pas de fichier {}'.format(ath.split()[0], distance))
+        if not sessions and distance:
+            st.sidebar.caption('⚠️ {} — pas de session {}'.format(ath.split()[0], distance))
             continue
         chosen = sessions[-1]
         ATHLETES_FILES[ath] = chosen['fichier']
