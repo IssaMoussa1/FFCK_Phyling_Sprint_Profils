@@ -41,43 +41,71 @@ GDRIVE_FOLDER_ID = "1Bs7SuBh5MsDyeYD_gEOE0F9fa7SQEYjL"
 _GDRIVE_LOCAL    = os.path.join(os.path.expanduser("~"), ".phyling_gdrive_cache")
 
 
-@st.cache_resource(show_spinner="📡 Synchronisation des données depuis Google Drive…")
+@st.cache_resource(show_spinner="Synchronisation des donnees depuis Google Drive...")
 def _sync_gdrive():
-    import gdown, traceback
+    import requests, traceback
+    api_key = st.secrets.get("GDRIVE_API_KEY", "")
+    if not api_key:
+        print("GDRIVE_API_KEY manquante dans les secrets Streamlit")
+        return _GDRIVE_LOCAL
+
     os.makedirs(_GDRIVE_LOCAL, exist_ok=True)
 
-    try:
-        gdown.download_folder(
-            id=GDRIVE_FOLDER_ID,
-            output=_GDRIVE_LOCAL,
-            quiet=False,
-            use_cookies=False,
-        )
-    except Exception:
-        print("=== GDOWN ERROR ===")
-        traceback.print_exc()
-        print("===================")
+    # 1. Lister tous les fichiers du dossier via l'API Drive v3
+    all_files = []
+    page_token = None
+    while True:
+        params = {
+            "q": f"'{GDRIVE_FOLDER_ID}' in parents and trashed=false",
+            "key": api_key,
+            "fields": "nextPageToken,files(id,name,mimeType)",
+            "pageSize": 1000,
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        try:
+            r = requests.get(
+                "https://www.googleapis.com/drive/v3/files",
+                params=params, timeout=30
+            )
+            data = r.json()
+            if "error" in data:
+                print("GDRIVE API ERROR:", data["error"])
+                break
+            all_files.extend(data.get("files", []))
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+        except Exception:
+            traceback.print_exc()
+            break
 
-    # gdown crée un sous-dossier nommé d'après le dossier Drive — on le détecte
-    try:
-        entries = os.listdir(_GDRIVE_LOCAL)
-        print("=== GDRIVE LOCAL CONTENTS ===", entries)
-        subdirs = [
-            os.path.join(_GDRIVE_LOCAL, d)
-            for d in entries
-            if os.path.isdir(os.path.join(_GDRIVE_LOCAL, d))
-        ]
-        if subdirs:
-            best = max(subdirs, key=lambda d: len([
-                f for f in os.listdir(d) if f.endswith('.csv')
-            ]))
-            n_csv = len([f for f in os.listdir(best) if f.endswith('.csv')])
-            print(f"=== BEST SUBDIR: {best} ({n_csv} CSV) ===")
-            return best
-    except Exception:
-        print("=== SUBDIR ERROR ===")
-        traceback.print_exc()
+    print(f"=== {len(all_files)} fichiers trouves dans Drive ===")
 
+    # 2. Telecharger uniquement les CSV et ZIP absents localement
+    for f in all_files:
+        name = f["name"]
+        if not (name.endswith(".csv") or name.endswith(".zip")):
+            continue
+        dest = os.path.join(_GDRIVE_LOCAL, name)
+        if os.path.exists(dest):
+            continue
+        try:
+            dl_url = (
+                f"https://www.googleapis.com/drive/v3/files/{f['id']}"
+                f"?alt=media&key={api_key}"
+            )
+            with requests.get(dl_url, stream=True, timeout=120) as resp:
+                resp.raise_for_status()
+                with open(dest, "wb") as out:
+                    for chunk in resp.iter_content(chunk_size=8192):
+                        out.write(chunk)
+        except Exception:
+            print(f"Erreur telechargement {name}")
+            traceback.print_exc()
+
+    n_csv = len([x for x in os.listdir(_GDRIVE_LOCAL) if x.endswith(".csv")])
+    print(f"=== {n_csv} CSV disponibles localement ===")
     return _GDRIVE_LOCAL
 
 
