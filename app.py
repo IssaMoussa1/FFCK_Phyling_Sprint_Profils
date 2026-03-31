@@ -43,10 +43,6 @@ _GDRIVE_LOCAL    = os.path.join(os.path.expanduser("~"), ".phyling_gdrive_cache"
 
 @st.cache_resource(show_spinner="📡 Synchronisation des données depuis Google Drive…")
 def _sync_gdrive():
-    """
-    Télécharge le contenu du dossier Google Drive dans un répertoire local persistant.
-    Utilise cache_resource : s'exécute une seule fois par cycle de vie du serveur.
-    """
     import gdown
     os.makedirs(_GDRIVE_LOCAL, exist_ok=True)
     try:
@@ -57,7 +53,18 @@ def _sync_gdrive():
             use_cookies=False,
         )
     except Exception:
-        pass  # Échec silencieux — on affiche un warning dans la sidebar
+        pass
+    # gdown crée un sous-dossier nommé d'après le dossier Drive — on le détecte
+    try:
+        subdirs = [
+            os.path.join(_GDRIVE_LOCAL, d)
+            for d in os.listdir(_GDRIVE_LOCAL)
+            if os.path.isdir(os.path.join(_GDRIVE_LOCAL, d))
+        ]
+        if subdirs:
+            return subdirs[0]
+    except Exception:
+        pass
     return _GDRIVE_LOCAL
 
 
@@ -2041,7 +2048,7 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-    # Vérification que le Drive a bien été synchronisé
+    # Vérification synchronisation Drive
     _n_csv = len([f for f in os.listdir(DATA_DIR) if f.endswith('.csv')
                   and f != 'registre.csv']) if os.path.isdir(DATA_DIR) else 0
     if _n_csv == 0:
