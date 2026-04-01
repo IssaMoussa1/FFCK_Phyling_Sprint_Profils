@@ -404,12 +404,31 @@ def parse_comment(comment):
     return meta
 
 
+def _extract_distance_from_text(text):
+    """
+    Cherche une distance en mètres dans un texte.
+    Reconnaît : '250m', '250 m', '3*300m', '1000M', etc.
+    Retourne ex. '250m' ou '' si non trouvé.
+    """
+    VALID = {'250', '500', '1000', '2000'}
+    if not text or not isinstance(text, str):
+        return ''
+    # Chercher tous les nombres suivis de m
+    for m in re.finditer(r'(\d+)\s*m', text, re.IGNORECASE):
+        val = m.group(1)
+        if val in VALID:
+            return val + 'm'
+    return ''
+
+
 def parse_zip_metadata(zip_path):
     """
     Lit le maxi_database.xlsx dans un zip et retourne les métadonnées.
+    Inclut un dict 'distances_par_sel' : {1: '250m', 2: '300m', ...}
+    pour alimenter la colonne distance du registre.
     Retourne un dict ou None si non trouvé.
     """
-    import zipfile, io
+    import zipfile, io, json as _json
     try:
         with zipfile.ZipFile(zip_path, 'r') as zf:
             names = zf.namelist()
@@ -426,21 +445,40 @@ def parse_zip_metadata(zip_path):
                 df_rec = xl.parse('Record').fillna('')
                 if not df_rec.empty:
                     row = df_rec.iloc[0]
-                    comment = str(row.get('comment', ''))
-                    meta.update(parse_comment(comment))
-                    meta['comment_raw'] = comment
+                    comment_global = str(row.get('comment', ''))
+                    exercise_global = str(row.get('exercise', ''))
+                    meta.update(parse_comment(comment_global))
+                    meta['comment_raw'] = comment_global
+
                     if not meta['discipline'] and str(row.get('sport', '')).lower() == 'kayak':
                         meta['discipline'] = 'Kayak'
-                    # Bateau depuis other_data JSON
-                    if not meta['bateau']:
-                        try:
-                            import json as _json
-                            od = _json.loads(str(row.get('other_data', '{}')))
-                            boat = od.get('boat', '')
-                            if boat:
-                                meta['bateau'] = boat.upper()
-                        except Exception:
-                            pass
+
+                    # Bateau + distances par sélection depuis other_data JSON
+                    try:
+                        od = _json.loads(str(row.get('other_data', '{}')))
+                        boat = od.get('boat', '')
+                        if boat and not meta['bateau']:
+                            meta['bateau'] = boat.upper()
+
+                        # Distances par numéro de sélection
+                        distances_par_sel = {}
+                        for sel in od.get('creating_selections', []):
+                            num = sel.get('num')
+                            if num is None:
+                                continue
+                            # Priorité : comment sel > exercise_name sel > comment global > exercise global
+                            dist = (
+                                _extract_distance_from_text(str(sel.get('comment', '')))
+                                or _extract_distance_from_text(str(sel.get('exercise_name', '')))
+                                or _extract_distance_from_text(comment_global)
+                                or _extract_distance_from_text(exercise_global)
+                            )
+                            if dist:
+                                distances_par_sel[int(num)] = dist
+
+                        meta['distances_par_sel'] = distances_par_sel
+                    except Exception:
+                        meta['distances_par_sel'] = {}
 
             # Feuille User → noms des athlètes
             if 'User' in xl.sheet_names:
@@ -460,46 +498,66 @@ def parse_zip_metadata(zip_path):
 
 def enrich_registre_from_zips(df_reg):
     """
-    Parcourt data/zips/, lit les métadonnées, enrichit df_reg.
-    Crée les colonnes manquantes si nécessaire.
+    Parcourt DATA_DIR, lit les métadonnées des ZIP, enrichit df_reg.
+    Gère les distances par sélection (sel_1, sel_2...) depuis other_data.
     """
-    zips_dir = os.path.join(DATA_DIR, 'zips')
-    if not os.path.isdir(zips_dir):
-        return df_reg
+    # Chercher les ZIP directement dans DATA_DIR (nouveau workflow Drive)
+    # et dans DATA_DIR/zips/ (ancien workflow)
+    zip_dirs = [DATA_DIR]
+    zips_subdir = os.path.join(DATA_DIR, 'zips')
+    if os.path.isdir(zips_subdir):
+        zip_dirs.append(zips_subdir)
 
     meta_cols = ['discipline', 'sexe', 'categorie', 'bateau', 'type_course', 'lieu']
-    for c in meta_cols:
+    for c in meta_cols + ['distance']:
         if c not in df_reg.columns:
             df_reg[c] = ''
 
-    # Mapper folder_name → lignes du registre
-    # Le zip contient folder_name comme YYYYMMDD_HHMMSS_0/
-    # Le registre a date+heure → on peut matcher
-    for zip_fname in os.listdir(zips_dir):
-        if not zip_fname.endswith('.zip'):
+    for zip_dir in zip_dirs:
+        if not os.path.isdir(zip_dir):
             continue
-        zip_path = os.path.join(zips_dir, zip_fname)
-        meta = parse_zip_metadata(zip_path)
-        if not meta:
-            continue
+        for zip_fname in os.listdir(zip_dir):
+            if not zip_fname.endswith('.zip'):
+                continue
+            zip_path = os.path.join(zip_dir, zip_fname)
+            meta = parse_zip_metadata(zip_path)
+            if not meta:
+                continue
 
-        # Extraire date+heure depuis le nom du zip : nom-YYYYMMDD_HHMMSS-dist.zip
-        m_zip = re.search(r'([0-9]{8})_([0-9]{6})', zip_fname)
-        if not m_zip:
-            continue
-        date_raw, heure_raw = m_zip.groups()
-        date_str  = '{}-{}-{}'.format(date_raw[:4], date_raw[4:6], date_raw[6:])
-        heure_str = '{}:{}'.format(heure_raw[:2], heure_raw[2:4])
+            # Extraire date+heure depuis le nom du zip
+            m_zip = re.search(r'([0-9]{8})_([0-9]{6})', zip_fname)
+            if not m_zip:
+                continue
+            date_raw, heure_raw = m_zip.groups()
+            date_str  = '{}-{}-{}'.format(date_raw[:4], date_raw[4:6], date_raw[6:])
+            heure_str = '{}:{}'.format(heure_raw[:2], heure_raw[2:4])
 
-        # Trouver les lignes correspondantes dans le registre
-        mask = (df_reg['date'] == date_str) & (df_reg['heure'].str.startswith(heure_str[:5]))
-        if mask.sum() == 0:
-            continue
+            # Trouver les lignes correspondantes dans le registre
+            mask_base = (
+                (df_reg['date'] == date_str) &
+                (df_reg['heure'].str.startswith(heure_str[:5]))
+            )
+            if mask_base.sum() == 0:
+                continue
 
-        for col in meta_cols:
-            val = meta.get(col, '')
-            if val:
-                df_reg.loc[mask & (df_reg[col] == ''), col] = val
+            # Enrichir les métadonnées communes
+            for col in meta_cols:
+                val = meta.get(col, '')
+                if val:
+                    df_reg.loc[mask_base & (df_reg[col] == ''), col] = val
+
+            # Enrichir la distance par numéro de sélection
+            distances_par_sel = meta.get('distances_par_sel', {})
+            for idx in df_reg[mask_base].index:
+                if df_reg.at[idx, 'distance']:
+                    continue  # Déjà renseignée, on ne l'écrase pas
+                try:
+                    sel_num = int(df_reg.at[idx, 'sel'])
+                except Exception:
+                    sel_num = 1
+                dist = distances_par_sel.get(sel_num, '')
+                if dist:
+                    df_reg.at[idx, 'distance'] = dist
 
     return df_reg
 
