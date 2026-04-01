@@ -308,6 +308,125 @@ def load_registre():
     return df_reg
 
 
+def save_registre_to_drive(df_reg):
+    """Sauvegarde registre.csv dans Google Drive via l'API."""
+    import requests, io
+    api_key = st.secrets.get("GDRIVE_API_KEY", "")
+    if not api_key:
+        return False, "Clé API manquante"
+    # Chercher si registre.csv existe déjà dans Drive
+    params = {
+        "q": f"'{GDRIVE_FOLDER_ID}' in parents and name='registre.csv' and trashed=false",
+        "key": api_key,
+        "fields": "files(id,name)",
+    }
+    try:
+        r = requests.get("https://www.googleapis.com/drive/v3/files",
+                         params=params, timeout=15)
+        files = r.json().get("files", [])
+        csv_bytes = df_reg.to_csv(index=False).encode('utf-8')
+        headers = {"Content-Type": "text/csv"}
+        if files:
+            file_id = files[0]["id"]
+            url = f"https://www.googleapis.com/upload/drive/v3/files/{file_id}?uploadType=media&key={api_key}"
+            resp = requests.patch(url, data=csv_bytes, headers=headers, timeout=30)
+        else:
+            meta_url = f"https://www.googleapis.com/drive/v3/files?uploadType=multipart&key={api_key}"
+            import json as _json
+            meta = _json.dumps({"name": "registre.csv", "parents": [GDRIVE_FOLDER_ID]}).encode()
+            boundary = b"boundary123"
+            body = (b"--" + boundary + b"\r\nContent-Type: application/json\r\n\r\n" +
+                    meta + b"\r\n--" + boundary + b"\r\nContent-Type: text/csv\r\n\r\n" +
+                    csv_bytes + b"\r\n--" + boundary + b"--")
+            resp = requests.post(meta_url, data=body,
+                                 headers={"Content-Type": f"multipart/related; boundary=boundary123"},
+                                 timeout=30)
+        if resp.status_code in (200, 201):
+            # Mettre à jour le fichier local
+            local_path = os.path.join(DATA_DIR, 'registre.csv')
+            with open(local_path, 'wb') as f_out:
+                f_out.write(csv_bytes)
+            return True, "Registre sauvegardé"
+        return False, f"Erreur HTTP {resp.status_code}"
+    except Exception as e:
+        return False, str(e)
+
+
+def render_registre_editor(df_reg):
+    """Onglet admin : éditeur du registre avec menus déroulants."""
+    st.markdown('### ⚙️ Éditeur du registre')
+    st.caption('Modifiez les métadonnées manquantes. Les colonnes grises sont auto-remplies.')
+
+    # Filtres de recherche
+    search = st.text_input('Rechercher un athlète', placeholder='Nom...', key='reg_search')
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        show_incomplete = st.checkbox('Afficher uniquement les entrées incomplètes', value=True, key='reg_incomplete')
+    with col_f2:
+        show_nodist = st.checkbox('Sans distance uniquement', value=False, key='reg_nodist')
+
+    df_edit = df_reg.copy()
+    if search:
+        df_edit = df_edit[df_edit['athlete'].str.contains(search, case=False, na=False)]
+    if show_incomplete:
+        mask_incomplete = (
+            df_edit['sexe'].isin(['', 'nan']) |
+            df_edit['discipline'].isin(['', 'nan']) |
+            df_edit['type_course'].isin(['', 'nan']) |
+            df_edit['distance'].isin(['', 'nan'])
+        )
+        df_edit = df_edit[mask_incomplete]
+    if show_nodist:
+        df_edit = df_edit[df_edit['distance'].isin(['', 'nan', float('nan')])]
+
+    st.caption(f'{len(df_edit)} entrée(s) affichée(s) · {len(df_reg)} total')
+
+    if df_edit.empty:
+        st.success('Toutes les entrées sont complètes.')
+        return
+
+    # Tableau éditable
+    edited = st.data_editor(
+        df_edit[['athlete', 'date', 'heure', 'distance', 'sexe',
+                 'discipline', 'categorie', 'bateau', 'type_course', 'lieu']].fillna(''),
+        column_config={
+            'athlete':     st.column_config.TextColumn('Athlète', disabled=True),
+            'date':        st.column_config.TextColumn('Date', disabled=True),
+            'heure':       st.column_config.TextColumn('Heure', disabled=True),
+            'distance':    st.column_config.SelectboxColumn('Distance',   options=REG_OPTIONS['distance']),
+            'sexe':        st.column_config.SelectboxColumn('Sexe',       options=REG_OPTIONS['sexe']),
+            'discipline':  st.column_config.SelectboxColumn('Discipline', options=REG_OPTIONS['discipline']),
+            'categorie':   st.column_config.SelectboxColumn('Catégorie',  options=REG_OPTIONS['categorie']),
+            'bateau':      st.column_config.SelectboxColumn('Bateau',     options=REG_OPTIONS['bateau']),
+            'type_course': st.column_config.SelectboxColumn('Type',       options=REG_OPTIONS['type_course']),
+            'lieu':        st.column_config.SelectboxColumn('Lieu',       options=REG_OPTIONS['lieu']),
+        },
+        use_container_width=True,
+        hide_index=True,
+        num_rows='fixed',
+        key='reg_editor',
+    )
+
+    col_save, col_cancel = st.columns([2, 1])
+    with col_save:
+        if st.button('💾 Sauvegarder dans Drive', type='primary', use_container_width=True):
+            # Fusionner les modifications dans df_reg complet
+            for idx_e, row_e in edited.iterrows():
+                orig_idx = df_edit.index[list(df_edit.index).index(idx_e)] if idx_e in df_edit.index else None
+                if orig_idx is not None:
+                    for col in ['distance', 'sexe', 'discipline', 'categorie', 'bateau', 'type_course', 'lieu']:
+                        df_reg.at[orig_idx, col] = row_e[col]
+            ok, msg = save_registre_to_drive(df_reg)
+            if ok:
+                st.success(msg + ' — rechargez la page pour voir les changements.')
+                st.cache_data.clear()
+            else:
+                st.error(f'Erreur : {msg}')
+    with col_cancel:
+        if st.button('↩ Annuler', use_container_width=True):
+            st.rerun()
+
+
 def get_athletes_list(df_reg):
     """Retourne la liste triée des noms d'athlètes uniques."""
     if df_reg.empty:
@@ -347,18 +466,25 @@ def get_sessions_for_athlete(df_reg, athlete, distance):
 # ─────────────────────────────────────────────────────────────────────────────
 
 COMMENT_DICT = {
-    # Discipline
-    'K': ('discipline', 'Kayak'),
-    'C': ('discipline', 'Canoë'),
-    # Sexe (D = Dame = F)
-    'H': ('sexe', 'H'),
-    'D': ('sexe', 'F'),
-    # Type de course
-    'FA': ('type_course', 'Finale A'),
-    'FB': ('type_course', 'Finale B'),
-    'SF': ('type_course', 'Demi-finale'),
-    # Lieux
+    'K':   ('discipline', 'Kayak'),
+    'C':   ('discipline', 'Canoë'),
+    'H':   ('sexe', 'H'),
+    'D':   ('sexe', 'F'),
+    'FA':  ('type_course', 'Compétition'),
+    'FB':  ('type_course', 'Compétition'),
+    'SF':  ('type_course', 'Compétition'),
     'BSM': ('lieu', 'Boulogne-sur-Mer'),
+}
+
+# Valeurs contrôlées pour l'éditeur du registre
+REG_OPTIONS = {
+    'sexe':        ['', 'H', 'F'],
+    'discipline':  ['', 'Kayak', 'Canoë'],
+    'categorie':   ['', 'Junior', 'U23', 'Senior'],
+    'bateau':      ['', 'K1', 'K2', 'K4', 'C1', 'C2', 'C4'],
+    'type_course': ['', 'Entraînement', 'Compétition'],
+    'lieu':        ['', 'Vaires-sur-Marne', 'Boulogne-sur-Mer', 'Caen'],
+    'distance':    ['', '200m', '250m', '500m', '1000m', '2000m'],
 }
 CATEGORIE_PATTERN = re.compile(r'\b(U\d{2})\b', re.IGNORECASE)
 BATEAU_PATTERN    = re.compile(r'\b([KC][124])\b', re.IGNORECASE)
@@ -2090,7 +2216,7 @@ def check_login():
     col_l, col_c, col_r = st.columns([1, 2, 1])
     with col_c:
         st.markdown('<div class="login-box">', unsafe_allow_html=True)
-        st.markdown('<div class="login-title">🛶 Sprint Kayak</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-title">🛶 Sprint Canoë-Kayak</div>', unsafe_allow_html=True)
         st.markdown('<div class="login-sub">Analyse Maxi-Phyling · FFCK</div>', unsafe_allow_html=True)
 
         username = st.text_input("Identifiant", key="login_user", placeholder="Votre identifiant")
@@ -2173,120 +2299,82 @@ with st.sidebar:
         return sorted(df_filt[col].replace('nan', '').replace('', float('nan'))
                       .dropna().unique().tolist())
 
-    # ── Calendrier + filtre date ────────────────────────────────────────────────
-    st.markdown('**Date**')
-    from datetime import datetime as _dt
-    import streamlit.components.v1 as _components
-    import calendar as _cal
+    # ── Filtres date : Plage (B) + Chips (A) ──────────────────────────────────
+    from datetime import datetime as _dt, date as _date
 
     all_dates_str = df_filt['date'].replace('', float('nan')).dropna().unique().tolist()
-    parsed_dates  = []
-    for d in all_dates_str:
-        try:
-            parsed_dates.append(_dt.strptime(str(d), '%Y-%m-%d').date())
-        except Exception:
-            pass
+    parsed_dates  = sorted(set(
+        _dt.strptime(str(d), '%Y-%m-%d').date()
+        for d in all_dates_str
+        if d and str(d) not in ('nan', 'NaT')
+    ), reverse=False)
 
     if parsed_dates:
-        unique_dates = sorted(set(parsed_dates))
-        all_months   = sorted(set((d.year, d.month) for d in unique_dates))
+        # ── B : Plage de dates ──────────────────────────────────────────────
+        st.markdown('**Période**')
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            date_min = st.date_input('Du', value=parsed_dates[0],
+                                     min_value=parsed_dates[0],
+                                     max_value=parsed_dates[-1],
+                                     key='date_from', label_visibility='visible')
+        with col_d2:
+            date_max = st.date_input('Au', value=parsed_dates[-1],
+                                     min_value=parsed_dates[0],
+                                     max_value=parsed_dates[-1],
+                                     key='date_to', label_visibility='visible')
 
-        # Navigation mois
-        if ('cal_month_idx' not in st.session_state or
-                st.session_state['cal_month_idx'] >= len(all_months)):
-            st.session_state['cal_month_idx'] = len(all_months) - 1
-        cal_idx = st.session_state['cal_month_idx']
+        # Dates dans la plage
+        dates_in_range = [d for d in parsed_dates if date_min <= d <= date_max]
 
-        col_prev, col_mid, col_next = st.columns([1, 4, 1])
-        with col_prev:
-            if st.button('‹', key='cal_prev', disabled=(cal_idx == 0),
-                         use_container_width=True):
-                st.session_state['cal_month_idx'] -= 1
-                st.rerun()
-        with col_next:
-            if st.button('›', key='cal_next',
-                         disabled=(cal_idx >= len(all_months) - 1),
-                         use_container_width=True):
-                st.session_state['cal_month_idx'] += 1
-                st.rerun()
+        # ── A : Chips de sessions ───────────────────────────────────────────
+        if dates_in_range:
+            st.markdown('**Sessions**')
+            col_all2, col_none2 = st.columns(2)
+            with col_all2:
+                if st.button('Tout', key='chip_all', use_container_width=True):
+                    st.session_state['chip_sel'] = set(dates_in_range)
+                    st.rerun()
+            with col_none2:
+                if st.button('Aucun', key='chip_none', use_container_width=True):
+                    st.session_state['chip_sel'] = set()
+                    st.rerun()
 
-        cur_year, cur_month = all_months[cal_idx]
-        MONTHS_FR = ['','Janvier','Février','Mars','Avril','Mai','Juin',
-                     'Juillet','Août','Septembre','Octobre','Novembre','Décembre']
-        # titre géré par render_calendar
+            # Initialiser la sélection chips
+            if ('chip_sel' not in st.session_state or
+                    not st.session_state['chip_sel'].issubset(set(dates_in_range))):
+                st.session_state['chip_sel'] = set(dates_in_range)
 
-        # Construire tooltips
-        date_data_raw = {}
-        for _, row in df_filt.iterrows():
-            try:
-                d     = _dt.strptime(str(row['date']), '%Y-%m-%d').date()
-                ath   = str(row['athlete'])
-                dist  = str(row.get('distance', '')) or '?'
-                lieu  = str(row.get('lieu', ''))
-                lieu  = lieu if lieu not in ('', 'nan', 'NaN', 'None') else ''
-                key   = (d, ath, lieu)
-                date_data_raw.setdefault(key, []).append(dist)
-            except Exception:
-                pass
-        date_data = {}
-        for (d, ath, lieu), dists_list in date_data_raw.items():
-            short = ' / '.join(p.split()[0] for p in ath.split('/'))
-            dists_str = ', '.join(sorted(set(dists_list)))
-            entry = '{} · {}{}'.format(short, dists_str, ' · ' + lieu if lieu else '')
-            date_data.setdefault(d, set()).add(entry)
-        date_data = {d: sorted(v) for d, v in date_data.items()}
-
-        # Dates avec données dans le mois affiché
-        days_this_month = sorted(
-            d for d in unique_dates if d.year == cur_year and d.month == cur_month
-        )
-
-        # Initialiser sélection (par défaut = toutes)
-        if 'cal_selected' not in st.session_state:
-            st.session_state['cal_selected'] = set(unique_dates)
-
-        # Calendrier visuel en HTML (non cliquable, juste indicateur)
-        cal_html = render_calendar(unique_dates, cur_year, cur_month,
-                                   date_data, st.session_state['cal_selected'])
-        if cal_html:
-            _components.html(cal_html, height=175, scrolling=False)
-
-        # Boutons cliquables SOUS le calendrier — un par jour avec données
-        if days_this_month:
-            st.markdown('<style>div[data-testid="stHorizontalBlock"]{gap:1px!important}div[data-testid="column"]{padding:0!important}div[data-testid="column"] button{padding:1px 2px!important;font-size:0.55rem!important;min-height:16px!important;line-height:1!important;border-radius:3px!important}</style>', unsafe_allow_html=True)
-            chunks = [days_this_month[i:i+6] for i in range(0, len(days_this_month), 6)]
+            # Afficher les chips — 3 par ligne
+            chunks = [dates_in_range[i:i+3] for i in range(0, len(dates_in_range), 3)]
             for chunk in chunks:
-                btn_cols = st.columns([1]*len(chunk))
+                btn_cols = st.columns(len(chunk))
                 for col_b, day_d in zip(btn_cols, chunk):
-                    is_sel   = day_d in st.session_state['cal_selected']
-                    btn_type = 'primary' if is_sel else 'secondary'
-                    if col_b.button(day_d.strftime('%d/%m'), key='day_' + day_d.isoformat(),
-                                    use_container_width=True, type=btn_type):
-                        sel = st.session_state['cal_selected']
-                        if day_d in sel: sel.discard(day_d)
-                        else: sel.add(day_d)
+                    is_sel = day_d in st.session_state['chip_sel']
+                    label  = day_d.strftime('%d/%m')
+                    if col_b.button(label, key='chip_' + day_d.isoformat(),
+                                    type='primary' if is_sel else 'secondary',
+                                    use_container_width=True):
+                        if day_d in st.session_state['chip_sel']:
+                            st.session_state['chip_sel'].discard(day_d)
+                        else:
+                            st.session_state['chip_sel'].add(day_d)
                         st.rerun()
 
-        # Boutons Tout / Aucun
-        col_all, col_none = st.columns(2)
-        with col_all:
-            if st.button('Tout', key='cal_all', use_container_width=True):
-                st.session_state['cal_selected'] = set(unique_dates)
-                st.rerun()
-        with col_none:
-            if st.button('Aucun', key='cal_none', use_container_width=True):
-                st.session_state['cal_selected'] = set()
-                st.rerun()
+            # Appliquer filtre date
+            sel_iso = {d.strftime('%Y-%m-%d') for d in st.session_state['chip_sel']}
+            if sel_iso:
+                df_filt = df_filt[
+                    df_filt['date'].isin(sel_iso) | df_filt['date'].isin(['', 'nan'])
+                ]
+        else:
+            st.caption('Aucune session dans cette période.')
 
-        # Appliquer le filtre
-        sel_set = st.session_state['cal_selected']
-        if sel_set:
-            sel_iso = {d.strftime('%Y-%m-%d') for d in sel_set}
-            df_filt = df_filt[df_filt['date'].isin(sel_iso) | df_filt['date'].isin(['', 'nan'])]
-        # Si aucune date → pas de filtre (tout afficher)
+    st.divider()
+
     # ── Sexe ──────────────────────────────────────────────────────────────────
     sexes = _vals('sexe')
-    if len(sexes) >= 1:
+    if sexes:
         st.markdown('**Sexe**')
         sel_sexe = st.multiselect('Sexe', sexes, default=[], key='f_sexe',
                                   label_visibility='collapsed')
@@ -2295,72 +2383,84 @@ with st.sidebar:
 
     # ── Discipline ────────────────────────────────────────────────────────────
     disciplines = _vals('discipline')
-    if len(disciplines) >= 1:
+    if disciplines:
         st.markdown('**Discipline**')
         sel_disc = st.multiselect('Discipline', disciplines, default=[],
                                   key='f_disc', label_visibility='collapsed')
         if sel_disc:
             df_filt = df_filt[df_filt['discipline'].isin(sel_disc) | df_filt['discipline'].isin(['', 'nan'])]
 
-    # ── Épreuve ───────────────────────────────────────────────────────────────
-    st.markdown('**Épreuve**')
-    _dist_raw = df_filt['distance'].replace('', float('nan')).replace('None', float('nan')).dropna()
-    all_dist_vals = sorted(_dist_raw.unique().tolist()) if not df_filt.empty else ['250m']
-    if not all_dist_vals:
-        st.caption('Aucune épreuve — renseignez la distance dans le registre')
-        distance = ''
+    # ── Type de course ────────────────────────────────────────────────────────
+    types = _vals('type_course')
+    if types:
+        st.markdown('**Type de course**')
+        sel_type = st.multiselect('Type', types, default=[], key='f_type',
+                                  label_visibility='collapsed')
+        if sel_type:
+            df_filt = df_filt[df_filt['type_course'].isin(sel_type) | df_filt['type_course'].isin(['', 'nan'])]
     else:
-        freq = _dist_raw.value_counts()
-        default_dist = freq.index[0] if not freq.empty else all_dist_vals[0]
-        default_idx  = all_dist_vals.index(default_dist) if default_dist in all_dist_vals else 0
-        distance = st.selectbox('Distance', all_dist_vals, index=default_idx,
-                                label_visibility='collapsed')
+        sel_type = []
 
-    # ── Athlètes ──────────────────────────────────────────────────────────────
-    st.markdown('**Athlètes**')
-    # N'afficher que les athlètes qui ont un fichier pour la distance sélectionnée
-    df_with_dist = df_filt[
-        (df_filt['distance'] == distance) | (df_filt['distance'].isin(['', 'nan']))
-    ]
-    all_athletes = sorted(df_with_dist['athlete'].dropna().unique().tolist())
-    selected = st.multiselect('', all_athletes,
-                              default=[],
-                              key='sel_athletes',
-                              label_visibility='collapsed')
+    # ── Distance (uniquement si Compétition sélectionnée) ────────────────────
+    _is_competition = (
+        'Compétition' in sel_type or
+        (not sel_type and 'Compétition' in _vals('type_course'))
+    )
+    _dist_raw = df_filt['distance'].replace('', float('nan')).replace('None', float('nan')).dropna()
+    _has_distances = not _dist_raw.empty
+
+    if _is_competition or _has_distances:
+        st.markdown('**Épreuve**')
+        _olympic_dists = ['200m', '500m', '1000m']
+        _avail = sorted(_dist_raw.unique().tolist()) if _has_distances else _olympic_dists
+        _dist_opts = sorted(set(_avail + _olympic_dists)) if _is_competition else _avail
+        if _dist_opts:
+            distance = st.selectbox('Distance', _dist_opts, index=0,
+                                    label_visibility='collapsed')
+        else:
+            distance = ''
+    else:
+        distance = ''
+
+    # ── Catégorie ─────────────────────────────────────────────────────────────
+    cats = _vals('categorie')
+    if cats:
+        st.markdown('**Catégorie**')
+        sel_cat = st.multiselect('Catégorie', cats, default=[], key='f_cat',
+                                 label_visibility='collapsed')
+        if sel_cat:
+            df_filt = df_filt[df_filt['categorie'].isin(sel_cat) | df_filt['categorie'].isin(['', 'nan'])]
 
     # ── Plus de filtres ───────────────────────────────────────────────────────
     with st.expander('➕ Plus de filtres'):
-        cats = _vals('categorie')
-        if cats:
-            st.markdown('**Catégorie**')
-            sel_cat = st.multiselect('Catégorie', cats, default=cats, key='f_cat',
-                                     label_visibility='collapsed')
-            if sel_cat:
-                df_filt = df_filt[df_filt['categorie'].isin(sel_cat) | df_filt['categorie'].isin(['', 'nan'])]
-
         bateaux = _vals('bateau')
         if bateaux:
             st.markdown('**Bateau**')
-            sel_bat = st.multiselect('Bateau', bateaux, default=bateaux, key='f_bat',
+            sel_bat = st.multiselect('Bateau', bateaux, default=[], key='f_bat',
                                      label_visibility='collapsed')
             if sel_bat:
                 df_filt = df_filt[df_filt['bateau'].isin(sel_bat) | df_filt['bateau'].isin(['', 'nan'])]
 
-        types = _vals('type_course')
-        if types:
-            st.markdown('**Type de course**')
-            sel_type = st.multiselect('Type', types, default=types, key='f_type',
-                                      label_visibility='collapsed')
-            if sel_type:
-                df_filt = df_filt[df_filt['type_course'].isin(sel_type) | df_filt['type_course'].isin(['', 'nan'])]
-
         lieux = _vals('lieu')
         if lieux:
             st.markdown('**Lieu**')
-            sel_lieu = st.multiselect('Lieu', lieux, default=lieux, key='f_lieu',
+            sel_lieu = st.multiselect('Lieu', lieux, default=[], key='f_lieu',
                                       label_visibility='collapsed')
             if sel_lieu:
                 df_filt = df_filt[df_filt['lieu'].isin(sel_lieu) | df_filt['lieu'].isin(['', 'nan'])]
+
+    # ── Athlètes ──────────────────────────────────────────────────────────────
+    st.divider()
+    st.markdown('**Athlètes**')
+    if distance:
+        df_with_dist = df_filt[
+            (df_filt['distance'] == distance) | df_filt['distance'].isin(['', 'nan'])
+        ]
+    else:
+        df_with_dist = df_filt
+    all_athletes = sorted(df_with_dist['athlete'].dropna().unique().tolist())
+    selected = st.multiselect('Athlètes', all_athletes, default=[],
+                              key='sel_athletes', label_visibility='collapsed')
 
     # ── Résolution des fichiers (session la plus récente par athlète) ──────────
     ATHLETES_FILES = {}
@@ -2374,8 +2474,7 @@ with st.sidebar:
         ATHLETES_FILES[ath] = chosen['fichier']
         session_labels[ath] = chosen['label']
     st.divider()
-    _is_admin = st.session_state.get('username', '') == 'admin'
-    if _is_admin:
+    if st.session_state.get('username', '') == 'admin':
         st.markdown('**Fenêtre signal**',
                     help='Ajuste la portion du signal affichée dans l\'onglet Signal')
         t_start = st.slider('Début zoom (s)', 0.0, 120.0, 3.0, 0.5)
@@ -2456,11 +2555,14 @@ st.markdown(f'<div class="app-sub">Méthode : creux locaux · {distance} · '
 
 
 # ── ONGLETS ───────────────────────────────────────────────────────────────────
-t1, t2, t3 = st.tabs([
-    '① Signal',
-    '② Analyse individuelle',
-    '③ Comparaison',
-])
+_is_admin = st.session_state.get('username', '') == 'admin'
+_tab_labels = ['① Signal', '② Analyse individuelle', '③ Comparaison']
+if _is_admin:
+    _tab_labels.append('⚙️ Registre')
+
+_tabs = st.tabs(_tab_labels)
+t1, t2, t3 = _tabs[0], _tabs[1], _tabs[2]
+t_reg = _tabs[3] if _is_admin else None
 
 
 # ══ ① SIGNAL ════════════════════════════════════════════════════════════════
@@ -2573,6 +2675,12 @@ with t1:
                         f'</div>',
                         unsafe_allow_html=True)
             st.write('')
+
+
+# ══ ⚙️ REGISTRE (admin) ════════════════════════════════════════════════════
+if _is_admin and t_reg is not None:
+    with t_reg:
+        render_registre_editor(df_registre)
 
 
 # ══ ② ANALYSE INDIVIDUELLE ══════════════════════════════════════════════════
