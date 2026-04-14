@@ -35,84 +35,189 @@ warnings.filterwarnings('ignore')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CONFIGURATION
+# CONFIGURATION — API Phyling
 # ─────────────────────────────────────────────────────────────────────────────
-GDRIVE_FOLDER_ID = "1Bs7SuBh5MsDyeYD_gEOE0F9fa7SQEYjL"
-_GDRIVE_LOCAL    = os.path.join(os.path.expanduser("~"), ".phyling_gdrive_cache")
+PHYLING_BASE_URL = "https://api.app.phyling.fr"
+PHYLING_CLIENT_ID = 3  # FFCK
+
+# Répertoire cache local pour éviter de re-télécharger les données
+_CACHE_ROOT = os.path.join(os.path.expanduser("~"), ".phyling_cache")
+CACHE_DIR   = os.path.join(_CACHE_ROOT, "cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 
-@st.cache_resource(show_spinner="Synchronisation des donnees depuis Google Drive...")
-def _sync_gdrive():
-    import requests, traceback
-    api_key = st.secrets.get("GDRIVE_API_KEY", "")
+def _phyling_headers():
+    """Retourne les headers d'authentification Phyling."""
+    api_key = st.secrets.get("PHYLING_API_KEY", "")
     if not api_key:
-        print("GDRIVE_API_KEY manquante dans les secrets Streamlit")
-        return _GDRIVE_LOCAL
+        st.error("Clé API Phyling manquante — ajoutez PHYLING_API_KEY dans les secrets Streamlit.")
+        st.stop()
+    return {
+        "Authorization": f"ApiKey {api_key}",
+        "Content-Type": "application/json",
+    }
 
-    os.makedirs(_GDRIVE_LOCAL, exist_ok=True)
 
-    # 1. Lister tous les fichiers du dossier via l'API Drive v3
-    all_files = []
-    page_token = None
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_phyling_records(page_size=200):
+    """
+    Récupère tous les records kayak FFCK depuis l'API Phyling.
+    Retourne une liste de dicts prêts pour le registre.
+    """
+    import requests as _req
+    headers = _phyling_headers()
+    all_records = []
+    page = 1
+
     while True:
-        params = {
-            "q": f"'{GDRIVE_FOLDER_ID}' in parents and trashed=false",
-            "key": api_key,
-            "fields": "nextPageToken,files(id,name,mimeType)",
-            "pageSize": 1000,
-        }
-        if page_token:
-            params["pageToken"] = page_token
-        try:
-            r = requests.get(
-                "https://www.googleapis.com/drive/v3/files",
-                params=params, timeout=30
-            )
-            data = r.json()
-            if "error" in data:
-                print("GDRIVE API ERROR:", data["error"])
-                break
-            all_files.extend(data.get("files", []))
-            page_token = data.get("nextPageToken")
-            if not page_token:
-                break
-        except Exception:
-            traceback.print_exc()
+        r = _req.post(
+            f"{PHYLING_BASE_URL}/records/all",
+            headers=headers,
+            json={"pageId": page, "pageSize": page_size},
+            timeout=30,
+        )
+        if r.status_code != 200:
+            break
+        data = r.json()
+        records = data.get("records", [])
+        if not records:
             break
 
-    print(f"=== {len(all_files)} fichiers trouves dans Drive ===")
+        for rec in records:
+            # Garder uniquement les records kayak FFCK avec sélections
+            if rec.get("sport_name") != "kayak":
+                continue
+            if rec.get("client_id") != PHYLING_CLIENT_ID:
+                continue
+            sels = rec.get("selections", [])
+            if not sels:
+                continue
 
-    # 2. Telecharger uniquement les CSV et ZIP absents localement
-    for f in all_files:
-        name = f["name"]
-        if not (name.endswith(".csv") or name.endswith(".zip")):
-            continue
-        dest = os.path.join(_GDRIVE_LOCAL, name)
-        if os.path.exists(dest):
-            continue
+            users = rec.get("users", [])
+            athlete = " ".join([
+                u.get("firstname", "").capitalize() + " " +
+                u.get("lastname", "").upper()
+                for u in users
+            ]).strip() if users else "Inconnu"
+
+            # Parser la date
+            date_str = ""
+            try:
+                from datetime import datetime as _dt
+                date_str = _dt.strptime(
+                    rec["date"], "%d/%m/%Y %H:%M:%S"
+                ).strftime("%Y-%m-%d")
+            except Exception:
+                date_str = rec.get("date", "")[:10]
+
+            heure_str = ""
+            try:
+                heure_str = _dt.strptime(
+                    rec["date"], "%d/%m/%Y %H:%M:%S"
+                ).strftime("%H:%M")
+            except Exception:
+                pass
+
+            # Extraire métadonnées depuis other_data
+            import json as _json
+            other = {}
+            try:
+                other = _json.loads(rec.get("other_data", "{}"))
+            except Exception:
+                pass
+            bateau = other.get("boat", "").upper()
+
+            # Type de course
+            type_course = "Compétition" if rec.get("exercise_name", "") in [
+                "Finale A", "Finale B", "FA", "FB", "SF", "Course"
+            ] else "Entraînement"
+
+            # Une ligne par sélection
+            for sel in sels:
+                sel_id  = sel.get("id")
+                sel_num = sel.get("num", 1)
+                comment = sel.get("comment", rec.get("comment", ""))
+                ex_name = sel.get("exercise_name", rec.get("exercise_name", ""))
+
+                # Distance depuis comment ou exercise_name
+                dist = ""
+                for text in [comment, ex_name]:
+                    m = re.search(r"(\d+)\s*m", str(text), re.IGNORECASE)
+                    if m and m.group(1) in {"200","250","500","1000","2000"}:
+                        dist = m.group(1) + "m"
+                        break
+
+                # Clé unique : rec_id:sel_id
+                fichier_key = f"{rec['id']}:{sel_id}"
+
+                all_records.append({
+                    "fichier":     fichier_key,
+                    "athlete":     athlete,
+                    "distance":    dist,
+                    "date":        date_str,
+                    "heure":       heure_str,
+                    "sel":         str(sel_num),
+                    "notes":       comment,
+                    "discipline":  "Kayak",
+                    "sexe":        "",
+                    "categorie":   "",
+                    "bateau":      bateau,
+                    "type_course": type_course,
+                    "lieu":        "",
+                    "rec_id":      rec["id"],
+                    "sel_id":      sel_id,
+                    "group_name":  rec.get("group_name", ""),
+                })
+
+        total = data.get("total", 0)
+        if page * page_size >= total:
+            break
+        page += 1
+
+    return all_records
+
+
+@st.cache_data(show_spinner=False)
+def fetch_csv_from_api(rec_id, sel_id):
+    """
+    Télécharge le CSV d'une sélection depuis l'API Phyling.
+    Retourne un DataFrame pandas.
+    """
+    import requests as _req, io
+    cache_path = os.path.join(CACHE_DIR, f"{rec_id}_{sel_id}.pkl")
+
+    # Lire depuis le cache disque si disponible
+    if os.path.exists(cache_path):
         try:
-            dl_url = (
-                f"https://www.googleapis.com/drive/v3/files/{f['id']}"
-                f"?alt=media&key={api_key}"
-            )
-            with requests.get(dl_url, stream=True, timeout=120) as resp:
-                resp.raise_for_status()
-                with open(dest, "wb") as out:
-                    for chunk in resp.iter_content(chunk_size=8192):
-                        out.write(chunk)
+            import pickle
+            with open(cache_path, "rb") as f:
+                return pickle.load(f)
         except Exception:
-            print(f"Erreur telechargement {name}")
-            traceback.print_exc()
+            pass
 
-    n_csv = len([x for x in os.listdir(_GDRIVE_LOCAL) if x.endswith(".csv")])
-    print(f"=== {n_csv} CSV disponibles localement ===")
-    return _GDRIVE_LOCAL
+    # Télécharger depuis l'API
+    headers = _phyling_headers()
+    r = _req.post(
+        f"{PHYLING_BASE_URL}/records/{rec_id}/file/decoded",
+        headers=headers,
+        json={},
+        params={"sel_id": sel_id},
+        timeout=120,
+    )
+    if r.status_code != 200:
+        return pd.DataFrame()
 
+    df = pd.read_csv(io.StringIO(r.text))
 
-DATA_DIR  = _sync_gdrive()
-CACHE_DIR = os.path.join(DATA_DIR, 'cache')
-REGISTRE  = os.path.join(DATA_DIR, 'registre.csv')
-os.makedirs(CACHE_DIR, exist_ok=True)
+    # Sauvegarder dans le cache
+    try:
+        import pickle
+        with open(cache_path, "wb") as f:
+            pickle.dump(df, f)
+    except Exception:
+        pass
+
+    return df
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -201,230 +306,61 @@ def scan_data_dir():
 
 def load_registre():
     """
-    Charge registre.csv, fusionne avec les nouveaux fichiers détectés,
-    sauvegarde si des nouveautés sont trouvées.
-    Colonnes : fichier, athlete, distance, date, heure, sel, notes.
+    Charge le registre depuis l'API Phyling.
+    Fusionne avec un éventuel registre.csv local pour les métadonnées
+    ajoutées manuellement (sexe, lieu, etc.).
     """
-    cols = ['fichier', 'athlete', 'distance', 'date', 'heure', 'sel', 'notes']
-
     cols_base = ['fichier', 'athlete', 'distance', 'date', 'heure', 'sel', 'notes']
     cols_meta = ['discipline', 'sexe', 'categorie', 'bateau', 'type_course', 'lieu']
     cols_all  = cols_base + cols_meta
 
-    if os.path.exists(REGISTRE):
+    # Charger les records depuis l'API Phyling
+    api_records = fetch_phyling_records()
+    df_api = pd.DataFrame(api_records) if api_records else pd.DataFrame(columns=cols_all)
+
+    # Charger un registre local optionnel pour les métadonnées manuelles
+    reg_local = os.path.join(_CACHE_ROOT, 'registre_meta.csv')
+    if os.path.exists(reg_local):
         try:
-            # Lecture robuste : gère UTF-8, UTF-8 BOM, latin-1, virgule ou point-virgule
             for enc in ('utf-8-sig', 'utf-8', 'latin-1'):
                 try:
-                    df_reg = pd.read_csv(REGISTRE, dtype=str, encoding=enc,
-                                         sep=None, engine='python').fillna('')
-                    # Nettoyer BOM sur les noms de colonnes
-                    df_reg.columns = [c.lstrip('\ufeff').strip() for c in df_reg.columns]
+                    df_meta = pd.read_csv(reg_local, dtype=str, encoding=enc,
+                                          sep=None, engine='python').fillna('')
+                    df_meta.columns = [c.lstrip('\ufeff').strip() for c in df_meta.columns]
                     break
                 except UnicodeDecodeError:
                     continue
             else:
-                df_reg = pd.DataFrame(columns=cols_all)
-
-            # Corriger encodage cassé (Relève → RelÃ¨ve)
-            def _fix_enc(x):
-                if not isinstance(x, str): return x
-                try: return x.encode('latin-1').decode('utf-8')
-                except: return x
-            for col in df_reg.columns:
-                df_reg[col] = df_reg[col].apply(_fix_enc)
-
-            # Normaliser les dates DD/MM/YYYY → YYYY-MM-DD
-            def _fix_date(d):
-                if not d or str(d) in ('nan','NaT',''): return d
-                for fmt in ('%d/%m/%Y', '%Y-%m-%d', '%d-%m-%Y'):
-                    try:
-                        from datetime import datetime as _dtt
-                        return _dtt.strptime(str(d).strip(), fmt).strftime('%Y-%m-%d')
-                    except: pass
-                return d
-            if 'date' in df_reg.columns:
-                df_reg['date'] = df_reg['date'].apply(_fix_date)
-
+                df_meta = pd.DataFrame()
         except Exception:
-            df_reg = pd.DataFrame(columns=cols_all)
-        # Ajouter toutes les colonnes manquantes
-        for c in cols_all:
-            if c not in df_reg.columns:
-                df_reg[c] = ''
-        # Si la colonne fichier est absente ou vide, repartir de zero
-        if 'fichier' not in df_reg.columns or df_reg['fichier'].eq('').all():
-            df_reg = pd.DataFrame(columns=cols_all)
-    else:
-        df_reg = pd.DataFrame(columns=cols_all)
+            df_meta = pd.DataFrame()
 
-    # Normaliser les dates au format YYYY-MM-DD
-    if 'date' in df_reg.columns:
-        def _fix_date(d):
-            if not d or str(d) in ('nan', 'NaT', ''): return d
-            for fmt in ('%d/%m/%Y', '%Y-%m-%d', '%d-%m-%Y'):
-                try:
-                    from datetime import datetime as _dtt
-                    return _dtt.strptime(str(d).strip(), fmt).strftime('%Y-%m-%d')
-                except:
-                    pass
-            return d
-        df_reg['date'] = df_reg['date'].apply(_fix_date)
+        # Fusionner les métadonnées manuelles sur la clé fichier
+        if not df_meta.empty and 'fichier' in df_meta.columns and not df_api.empty:
+            meta_cols = ['fichier'] + [c for c in cols_meta if c in df_meta.columns]
+            df_api = df_api.merge(
+                df_meta[meta_cols], on='fichier', how='left', suffixes=('', '_meta')
+            )
+            # Priorité aux métadonnées manuelles si renseignées
+            for col in cols_meta:
+                if col + '_meta' in df_api.columns:
+                    mask = df_api[col + '_meta'].notna() & (df_api[col + '_meta'] != '')
+                    df_api.loc[mask, col] = df_api.loc[mask, col + '_meta']
+                    df_api.drop(columns=[col + '_meta'], inplace=True, errors='ignore')
 
-    # Supprimer les entrees dont le fichier n'existe pas sur disque
-    if not df_reg.empty and 'fichier' in df_reg.columns:
-        df_reg = df_reg[df_reg['fichier'].apply(
-            lambda f: bool(f) and os.path.exists(os.path.join(DATA_DIR, f))
-        )].copy()
+    df_reg = df_api.copy()
 
-    # Ajouter les nouveaux fichiers detectes
-    scanned = pd.DataFrame(scan_data_dir())
-    if not scanned.empty:
-        existing  = set(df_reg['fichier'].values) if not df_reg.empty else set()
-        new_files = scanned[~scanned['fichier'].isin(existing)]
-        if not new_files.empty:
-            df_reg = pd.concat([df_reg, new_files], ignore_index=True)
-
-    # Dedoublonner sur le nom de fichier (garde la premiere occurrence)
-    df_reg = df_reg.drop_duplicates(subset=['fichier'], keep='first').reset_index(drop=True)
-
-    # Ajouter colonnes métadonnées si absentes (sans écraser les valeurs existantes)
-    for c in ['discipline', 'sexe', 'categorie', 'bateau', 'type_course', 'lieu']:
+    # Assurer que toutes les colonnes existent
+    for c in cols_all:
         if c not in df_reg.columns:
             df_reg[c] = ''
 
-    # Enrichir depuis les zips si disponibles
-    df_reg_before = df_reg.copy()
-    df_reg = enrich_registre_from_zips(df_reg)
-
-    # Sauvegarder UNIQUEMENT si le contenu a changé (évite d'écraser les méta)
-    try:
-        changed = not df_reg.equals(df_reg_before) or not os.path.exists(REGISTRE)
-        if changed:
-            df_reg.to_csv(REGISTRE, index=False)
-    except Exception:
-        pass  # Filesystem read-only (ex: Streamlit Cloud) — continuer sans sauvegarder
+    # Dédoublonner
+    if not df_reg.empty:
+        df_reg = df_reg.drop_duplicates(subset=['fichier'], keep='first').reset_index(drop=True)
 
     return df_reg
 
-
-def save_registre_to_drive(df_reg):
-    """Sauvegarde registre.csv dans Google Drive via l'API."""
-    import requests, io
-    api_key = st.secrets.get("GDRIVE_API_KEY", "")
-    if not api_key:
-        return False, "Clé API manquante"
-    # Chercher si registre.csv existe déjà dans Drive
-    params = {
-        "q": f"'{GDRIVE_FOLDER_ID}' in parents and name='registre.csv' and trashed=false",
-        "key": api_key,
-        "fields": "files(id,name)",
-    }
-    try:
-        r = requests.get("https://www.googleapis.com/drive/v3/files",
-                         params=params, timeout=15)
-        files = r.json().get("files", [])
-        csv_bytes = df_reg.to_csv(index=False).encode('utf-8')
-        headers = {"Content-Type": "text/csv"}
-        if files:
-            file_id = files[0]["id"]
-            url = f"https://www.googleapis.com/upload/drive/v3/files/{file_id}?uploadType=media&key={api_key}"
-            resp = requests.patch(url, data=csv_bytes, headers=headers, timeout=30)
-        else:
-            meta_url = f"https://www.googleapis.com/drive/v3/files?uploadType=multipart&key={api_key}"
-            import json as _json
-            meta = _json.dumps({"name": "registre.csv", "parents": [GDRIVE_FOLDER_ID]}).encode()
-            boundary = b"boundary123"
-            body = (b"--" + boundary + b"\r\nContent-Type: application/json\r\n\r\n" +
-                    meta + b"\r\n--" + boundary + b"\r\nContent-Type: text/csv\r\n\r\n" +
-                    csv_bytes + b"\r\n--" + boundary + b"--")
-            resp = requests.post(meta_url, data=body,
-                                 headers={"Content-Type": f"multipart/related; boundary=boundary123"},
-                                 timeout=30)
-        if resp.status_code in (200, 201):
-            # Mettre à jour le fichier local
-            local_path = os.path.join(DATA_DIR, 'registre.csv')
-            with open(local_path, 'wb') as f_out:
-                f_out.write(csv_bytes)
-            return True, "Registre sauvegardé"
-        return False, f"Erreur HTTP {resp.status_code}"
-    except Exception as e:
-        return False, str(e)
-
-
-def render_registre_editor(df_reg):
-    """Onglet admin : éditeur du registre avec menus déroulants."""
-    st.markdown('### ⚙️ Éditeur du registre')
-    st.caption('Modifiez les métadonnées manquantes. Les colonnes grises sont auto-remplies.')
-
-    # Filtres de recherche
-    search = st.text_input('Rechercher un athlète', placeholder='Nom...', key='reg_search')
-    col_f1, col_f2 = st.columns(2)
-    with col_f1:
-        show_incomplete = st.checkbox('Afficher uniquement les entrées incomplètes', value=True, key='reg_incomplete')
-    with col_f2:
-        show_nodist = st.checkbox('Sans distance uniquement', value=False, key='reg_nodist')
-
-    df_edit = df_reg.copy()
-    if search:
-        df_edit = df_edit[df_edit['athlete'].str.contains(search, case=False, na=False)]
-    if show_incomplete:
-        mask_incomplete = (
-            df_edit['sexe'].isin(['', 'nan']) |
-            df_edit['discipline'].isin(['', 'nan']) |
-            df_edit['type_course'].isin(['', 'nan']) |
-            df_edit['distance'].isin(['', 'nan'])
-        )
-        df_edit = df_edit[mask_incomplete]
-    if show_nodist:
-        df_edit = df_edit[df_edit['distance'].isin(['', 'nan', float('nan')])]
-
-    st.caption(f'{len(df_edit)} entrée(s) affichée(s) · {len(df_reg)} total')
-
-    if df_edit.empty:
-        st.success('Toutes les entrées sont complètes.')
-        return
-
-    # Tableau éditable
-    edited = st.data_editor(
-        df_edit[['athlete', 'date', 'heure', 'distance', 'sexe',
-                 'discipline', 'categorie', 'bateau', 'type_course', 'lieu']].fillna(''),
-        column_config={
-            'athlete':     st.column_config.TextColumn('Athlète', disabled=True),
-            'date':        st.column_config.TextColumn('Date', disabled=True),
-            'heure':       st.column_config.TextColumn('Heure', disabled=True),
-            'distance':    st.column_config.SelectboxColumn('Distance',   options=REG_OPTIONS['distance']),
-            'sexe':        st.column_config.SelectboxColumn('Sexe',       options=REG_OPTIONS['sexe']),
-            'discipline':  st.column_config.SelectboxColumn('Discipline', options=REG_OPTIONS['discipline']),
-            'categorie':   st.column_config.SelectboxColumn('Catégorie',  options=REG_OPTIONS['categorie']),
-            'bateau':      st.column_config.SelectboxColumn('Bateau',     options=REG_OPTIONS['bateau']),
-            'type_course': st.column_config.SelectboxColumn('Type',       options=REG_OPTIONS['type_course']),
-            'lieu':        st.column_config.SelectboxColumn('Lieu',       options=REG_OPTIONS['lieu']),
-        },
-        use_container_width=True,
-        hide_index=True,
-        num_rows='fixed',
-        key='reg_editor',
-    )
-
-    col_save, col_cancel = st.columns([2, 1])
-    with col_save:
-        if st.button('💾 Sauvegarder dans Drive', type='primary', use_container_width=True):
-            # Fusionner les modifications dans df_reg complet
-            for idx_e, row_e in edited.iterrows():
-                orig_idx = df_edit.index[list(df_edit.index).index(idx_e)] if idx_e in df_edit.index else None
-                if orig_idx is not None:
-                    for col in ['distance', 'sexe', 'discipline', 'categorie', 'bateau', 'type_course', 'lieu']:
-                        df_reg.at[orig_idx, col] = row_e[col]
-            ok, msg = save_registre_to_drive(df_reg)
-            if ok:
-                st.success(msg + ' — rechargez la page pour voir les changements.')
-                st.cache_data.clear()
-            else:
-                st.error(f'Erreur : {msg}')
-    with col_cancel:
-        if st.button('↩ Annuler', use_container_width=True):
-            st.rerun()
 
 
 def get_athletes_list(df_reg):
@@ -466,25 +402,18 @@ def get_sessions_for_athlete(df_reg, athlete, distance):
 # ─────────────────────────────────────────────────────────────────────────────
 
 COMMENT_DICT = {
-    'K':   ('discipline', 'Kayak'),
-    'C':   ('discipline', 'Canoë'),
-    'H':   ('sexe', 'H'),
-    'D':   ('sexe', 'F'),
-    'FA':  ('type_course', 'Compétition'),
-    'FB':  ('type_course', 'Compétition'),
-    'SF':  ('type_course', 'Compétition'),
+    # Discipline
+    'K': ('discipline', 'Kayak'),
+    'C': ('discipline', 'Canoë'),
+    # Sexe (D = Dame = F)
+    'H': ('sexe', 'H'),
+    'D': ('sexe', 'F'),
+    # Type de course
+    'FA': ('type_course', 'Finale A'),
+    'FB': ('type_course', 'Finale B'),
+    'SF': ('type_course', 'Demi-finale'),
+    # Lieux
     'BSM': ('lieu', 'Boulogne-sur-Mer'),
-}
-
-# Valeurs contrôlées pour l'éditeur du registre
-REG_OPTIONS = {
-    'sexe':        ['', 'H', 'F'],
-    'discipline':  ['', 'Kayak', 'Canoë'],
-    'categorie':   ['', 'Junior', 'U23', 'Senior'],
-    'bateau':      ['', 'K1', 'K2', 'K4', 'C1', 'C2', 'C4'],
-    'type_course': ['', 'Entraînement', 'Compétition'],
-    'lieu':        ['', 'Vaires-sur-Marne', 'Boulogne-sur-Mer', 'Caen'],
-    'distance':    ['', '200m', '250m', '500m', '1000m', '2000m'],
 }
 CATEGORIE_PATTERN = re.compile(r'\b(U\d{2})\b', re.IGNORECASE)
 BATEAU_PATTERN    = re.compile(r'\b([KC][124])\b', re.IGNORECASE)
@@ -530,31 +459,12 @@ def parse_comment(comment):
     return meta
 
 
-def _extract_distance_from_text(text):
-    """
-    Cherche une distance en mètres dans un texte.
-    Reconnaît : '250m', '250 m', '3*300m', '1000M', etc.
-    Retourne ex. '250m' ou '' si non trouvé.
-    """
-    VALID = {'250', '500', '1000', '2000'}
-    if not text or not isinstance(text, str):
-        return ''
-    # Chercher tous les nombres suivis de m
-    for m in re.finditer(r'(\d+)\s*m', text, re.IGNORECASE):
-        val = m.group(1)
-        if val in VALID:
-            return val + 'm'
-    return ''
-
-
 def parse_zip_metadata(zip_path):
     """
     Lit le maxi_database.xlsx dans un zip et retourne les métadonnées.
-    Inclut un dict 'distances_par_sel' : {1: '250m', 2: '300m', ...}
-    pour alimenter la colonne distance du registre.
     Retourne un dict ou None si non trouvé.
     """
-    import zipfile, io, json as _json
+    import zipfile, io
     try:
         with zipfile.ZipFile(zip_path, 'r') as zf:
             names = zf.namelist()
@@ -571,40 +481,21 @@ def parse_zip_metadata(zip_path):
                 df_rec = xl.parse('Record').fillna('')
                 if not df_rec.empty:
                     row = df_rec.iloc[0]
-                    comment_global = str(row.get('comment', ''))
-                    exercise_global = str(row.get('exercise', ''))
-                    meta.update(parse_comment(comment_global))
-                    meta['comment_raw'] = comment_global
-
+                    comment = str(row.get('comment', ''))
+                    meta.update(parse_comment(comment))
+                    meta['comment_raw'] = comment
                     if not meta['discipline'] and str(row.get('sport', '')).lower() == 'kayak':
                         meta['discipline'] = 'Kayak'
-
-                    # Bateau + distances par sélection depuis other_data JSON
-                    try:
-                        od = _json.loads(str(row.get('other_data', '{}')))
-                        boat = od.get('boat', '')
-                        if boat and not meta['bateau']:
-                            meta['bateau'] = boat.upper()
-
-                        # Distances par numéro de sélection
-                        distances_par_sel = {}
-                        for sel in od.get('creating_selections', []):
-                            num = sel.get('num')
-                            if num is None:
-                                continue
-                            # Priorité : comment sel > exercise_name sel > comment global > exercise global
-                            dist = (
-                                _extract_distance_from_text(str(sel.get('comment', '')))
-                                or _extract_distance_from_text(str(sel.get('exercise_name', '')))
-                                or _extract_distance_from_text(comment_global)
-                                or _extract_distance_from_text(exercise_global)
-                            )
-                            if dist:
-                                distances_par_sel[int(num)] = dist
-
-                        meta['distances_par_sel'] = distances_par_sel
-                    except Exception:
-                        meta['distances_par_sel'] = {}
+                    # Bateau depuis other_data JSON
+                    if not meta['bateau']:
+                        try:
+                            import json as _json
+                            od = _json.loads(str(row.get('other_data', '{}')))
+                            boat = od.get('boat', '')
+                            if boat:
+                                meta['bateau'] = boat.upper()
+                        except Exception:
+                            pass
 
             # Feuille User → noms des athlètes
             if 'User' in xl.sheet_names:
@@ -624,66 +515,46 @@ def parse_zip_metadata(zip_path):
 
 def enrich_registre_from_zips(df_reg):
     """
-    Parcourt DATA_DIR, lit les métadonnées des ZIP, enrichit df_reg.
-    Gère les distances par sélection (sel_1, sel_2...) depuis other_data.
+    Parcourt data/zips/, lit les métadonnées, enrichit df_reg.
+    Crée les colonnes manquantes si nécessaire.
     """
-    # Chercher les ZIP directement dans DATA_DIR (nouveau workflow Drive)
-    # et dans DATA_DIR/zips/ (ancien workflow)
-    zip_dirs = [DATA_DIR]
-    zips_subdir = os.path.join(DATA_DIR, 'zips')
-    if os.path.isdir(zips_subdir):
-        zip_dirs.append(zips_subdir)
+    zips_dir = os.path.join(DATA_DIR, 'zips')
+    if not os.path.isdir(zips_dir):
+        return df_reg
 
     meta_cols = ['discipline', 'sexe', 'categorie', 'bateau', 'type_course', 'lieu']
-    for c in meta_cols + ['distance']:
+    for c in meta_cols:
         if c not in df_reg.columns:
             df_reg[c] = ''
 
-    for zip_dir in zip_dirs:
-        if not os.path.isdir(zip_dir):
+    # Mapper folder_name → lignes du registre
+    # Le zip contient folder_name comme YYYYMMDD_HHMMSS_0/
+    # Le registre a date+heure → on peut matcher
+    for zip_fname in os.listdir(zips_dir):
+        if not zip_fname.endswith('.zip'):
             continue
-        for zip_fname in os.listdir(zip_dir):
-            if not zip_fname.endswith('.zip'):
-                continue
-            zip_path = os.path.join(zip_dir, zip_fname)
-            meta = parse_zip_metadata(zip_path)
-            if not meta:
-                continue
+        zip_path = os.path.join(zips_dir, zip_fname)
+        meta = parse_zip_metadata(zip_path)
+        if not meta:
+            continue
 
-            # Extraire date+heure depuis le nom du zip
-            m_zip = re.search(r'([0-9]{8})_([0-9]{6})', zip_fname)
-            if not m_zip:
-                continue
-            date_raw, heure_raw = m_zip.groups()
-            date_str  = '{}-{}-{}'.format(date_raw[:4], date_raw[4:6], date_raw[6:])
-            heure_str = '{}:{}'.format(heure_raw[:2], heure_raw[2:4])
+        # Extraire date+heure depuis le nom du zip : nom-YYYYMMDD_HHMMSS-dist.zip
+        m_zip = re.search(r'([0-9]{8})_([0-9]{6})', zip_fname)
+        if not m_zip:
+            continue
+        date_raw, heure_raw = m_zip.groups()
+        date_str  = '{}-{}-{}'.format(date_raw[:4], date_raw[4:6], date_raw[6:])
+        heure_str = '{}:{}'.format(heure_raw[:2], heure_raw[2:4])
 
-            # Trouver les lignes correspondantes dans le registre
-            mask_base = (
-                (df_reg['date'] == date_str) &
-                (df_reg['heure'].str.startswith(heure_str[:5]))
-            )
-            if mask_base.sum() == 0:
-                continue
+        # Trouver les lignes correspondantes dans le registre
+        mask = (df_reg['date'] == date_str) & (df_reg['heure'].str.startswith(heure_str[:5]))
+        if mask.sum() == 0:
+            continue
 
-            # Enrichir les métadonnées communes
-            for col in meta_cols:
-                val = meta.get(col, '')
-                if val:
-                    df_reg.loc[mask_base & (df_reg[col] == ''), col] = val
-
-            # Enrichir la distance par numéro de sélection
-            distances_par_sel = meta.get('distances_par_sel', {})
-            for idx in df_reg[mask_base].index:
-                if df_reg.at[idx, 'distance']:
-                    continue  # Déjà renseignée, on ne l'écrase pas
-                try:
-                    sel_num = int(df_reg.at[idx, 'sel'])
-                except Exception:
-                    sel_num = 1
-                dist = distances_par_sel.get(sel_num, '')
-                if dist:
-                    df_reg.at[idx, 'distance'] = dist
+        for col in meta_cols:
+            val = meta.get(col, '')
+            if val:
+                df_reg.loc[mask & (df_reg[col] == ''), col] = val
 
     return df_reg
 
@@ -838,18 +709,16 @@ def load_with_cache(fname, fc, min_d, min_h):
     Retourne (strokes, raw_signals).
     """
     import pickle
-    csv_path   = os.path.join(DATA_DIR, fname)
     cache_path = _cache_path(fname, fc, min_d, min_h)
 
-    # Cache valide = fichier pkl existe ET est plus récent que le CSV
-    if os.path.exists(cache_path) and os.path.exists(csv_path):
-        if os.path.getmtime(cache_path) >= os.path.getmtime(csv_path):
-            try:
-                with open(cache_path, 'rb') as f:
-                    data = pickle.load(f)
-                return data['strokes'], data['raw']
-            except Exception:
-                pass  # Cache corrompu → on recalcule
+    # Cache valide = fichier pkl existe déjà
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, 'rb') as f:
+                data = pickle.load(f)
+            return data['strokes'], data['raw']
+        except Exception:
+            pass  # Cache corrompu → on recalcule
 
     # Calcul complet
     strokes, raw = load_and_detect(fname, fc, min_d, min_h)
@@ -982,7 +851,18 @@ def ath_color(name, name_list):
 
 @st.cache_data(show_spinner=False)
 def load_and_detect(fname, fc=FC_SMOOTH, min_d=MIN_DIST_S, min_h=MIN_PEAK_H):
-    df  = pd.read_csv(os.path.join(DATA_DIR, fname)).sort_values('T').copy()
+    # fname est au format "rec_id:sel_id" ou un chemin local (rétrocompatibilité)
+    if ':' in str(fname):
+        rec_id, sel_id = str(fname).split(':', 1)
+        df = fetch_csv_from_api(int(rec_id), int(sel_id))
+        if df.empty:
+            return [], {}
+    else:
+        local_path = os.path.join(_CACHE_ROOT, fname)
+        if not os.path.exists(local_path):
+            return [], {}
+        df = pd.read_csv(local_path)
+    df = df.sort_values('T').copy()
     acc = df['acc_x'].values; t = df['T'].values; D = df['D'].values
     spd = df['speed'].values if 'speed' in df.columns else np.full(len(t), np.nan)
     b, a = butter(2, fc / (FS / 2), btype='low')
@@ -2216,7 +2096,7 @@ def check_login():
     col_l, col_c, col_r = st.columns([1, 2, 1])
     with col_c:
         st.markdown('<div class="login-box">', unsafe_allow_html=True)
-        st.markdown('<div class="login-title">🛶 Sprint Canoë-Kayak</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-title">🛶 Sprint Kayak</div>', unsafe_allow_html=True)
         st.markdown('<div class="login-sub">Analyse Maxi-Phyling · FFCK</div>', unsafe_allow_html=True)
 
         username = st.text_input("Identifiant", key="login_user", placeholder="Votre identifiant")
@@ -2266,26 +2146,18 @@ with st.sidebar:
     st.caption('Analyse des coups de pagaie · Maxi-Phyling')
     st.divider()
 
-    # Bouton de rafraîchissement des données depuis Drive
-    if st.button('🔄 Rafraîchir les données', use_container_width=True,
-                 help='Télécharge les nouveaux fichiers depuis Google Drive'):
-        st.cache_resource.clear()
+    # Bouton de rafraîchissement
+    if st.button('🔄 Actualiser depuis Phyling', use_container_width=True,
+                 help="Recharge la liste des sessions depuis l'API Phyling"):
         st.cache_data.clear()
         st.rerun()
 
-    # Vérification synchronisation Drive
-    _n_csv = len([f for f in os.listdir(DATA_DIR) if f.endswith('.csv')
-                  and f != 'registre.csv']) if os.path.isdir(DATA_DIR) else 0
-    if _n_csv == 0:
-        st.warning('⚠️ Aucun fichier CSV trouvé — vérifiez le dossier Google Drive.')
-    else:
-        st.caption(f'📂 {_n_csv} fichier(s) CSV chargé(s) depuis Drive')
-
-    # Chargement dynamique depuis registre.csv + scan du dossier data/
-    df_registre = load_registre()
+    # Chargement depuis l'API Phyling
+    with st.spinner('Chargement des sessions Phyling...'):
+        df_registre = load_registre()
     n_sessions  = len(df_registre)
     n_athletes  = df_registre['athlete'].nunique() if not df_registre.empty else 0
-    st.caption('{} session(s) · {} athlète(s)'.format(n_sessions, n_athletes))
+    st.caption(f'{n_sessions} session(s) · {n_athletes} athlète(s) · API Phyling')
 
     df_filt = df_registre.copy()
 
@@ -2299,82 +2171,120 @@ with st.sidebar:
         return sorted(df_filt[col].replace('nan', '').replace('', float('nan'))
                       .dropna().unique().tolist())
 
-    # ── Filtres date : Plage (B) + Chips (A) ──────────────────────────────────
-    from datetime import datetime as _dt, date as _date
+    # ── Calendrier + filtre date ────────────────────────────────────────────────
+    st.markdown('**Date**')
+    from datetime import datetime as _dt
+    import streamlit.components.v1 as _components
+    import calendar as _cal
 
     all_dates_str = df_filt['date'].replace('', float('nan')).dropna().unique().tolist()
-    parsed_dates  = sorted(set(
-        _dt.strptime(str(d), '%Y-%m-%d').date()
-        for d in all_dates_str
-        if d and str(d) not in ('nan', 'NaT')
-    ), reverse=False)
+    parsed_dates  = []
+    for d in all_dates_str:
+        try:
+            parsed_dates.append(_dt.strptime(str(d), '%Y-%m-%d').date())
+        except Exception:
+            pass
 
     if parsed_dates:
-        # ── B : Plage de dates ──────────────────────────────────────────────
-        st.markdown('**Période**')
-        col_d1, col_d2 = st.columns(2)
-        with col_d1:
-            date_min = st.date_input('Du', value=parsed_dates[0],
-                                     min_value=parsed_dates[0],
-                                     max_value=parsed_dates[-1],
-                                     key='date_from', label_visibility='visible')
-        with col_d2:
-            date_max = st.date_input('Au', value=parsed_dates[-1],
-                                     min_value=parsed_dates[0],
-                                     max_value=parsed_dates[-1],
-                                     key='date_to', label_visibility='visible')
+        unique_dates = sorted(set(parsed_dates))
+        all_months   = sorted(set((d.year, d.month) for d in unique_dates))
 
-        # Dates dans la plage
-        dates_in_range = [d for d in parsed_dates if date_min <= d <= date_max]
+        # Navigation mois
+        if ('cal_month_idx' not in st.session_state or
+                st.session_state['cal_month_idx'] >= len(all_months)):
+            st.session_state['cal_month_idx'] = len(all_months) - 1
+        cal_idx = st.session_state['cal_month_idx']
 
-        # ── A : Chips de sessions ───────────────────────────────────────────
-        if dates_in_range:
-            st.markdown('**Sessions**')
-            col_all2, col_none2 = st.columns(2)
-            with col_all2:
-                if st.button('Tout', key='chip_all', use_container_width=True):
-                    st.session_state['chip_sel'] = set(dates_in_range)
-                    st.rerun()
-            with col_none2:
-                if st.button('Aucun', key='chip_none', use_container_width=True):
-                    st.session_state['chip_sel'] = set()
-                    st.rerun()
+        col_prev, col_mid, col_next = st.columns([1, 4, 1])
+        with col_prev:
+            if st.button('‹', key='cal_prev', disabled=(cal_idx == 0),
+                         use_container_width=True):
+                st.session_state['cal_month_idx'] -= 1
+                st.rerun()
+        with col_next:
+            if st.button('›', key='cal_next',
+                         disabled=(cal_idx >= len(all_months) - 1),
+                         use_container_width=True):
+                st.session_state['cal_month_idx'] += 1
+                st.rerun()
 
-            # Initialiser la sélection chips
-            if ('chip_sel' not in st.session_state or
-                    not st.session_state['chip_sel'].issubset(set(dates_in_range))):
-                st.session_state['chip_sel'] = set(dates_in_range)
+        cur_year, cur_month = all_months[cal_idx]
+        MONTHS_FR = ['','Janvier','Février','Mars','Avril','Mai','Juin',
+                     'Juillet','Août','Septembre','Octobre','Novembre','Décembre']
+        # titre géré par render_calendar
 
-            # Afficher les chips — 3 par ligne
-            chunks = [dates_in_range[i:i+3] for i in range(0, len(dates_in_range), 3)]
+        # Construire tooltips
+        date_data_raw = {}
+        for _, row in df_filt.iterrows():
+            try:
+                d     = _dt.strptime(str(row['date']), '%Y-%m-%d').date()
+                ath   = str(row['athlete'])
+                dist  = str(row.get('distance', '')) or '?'
+                lieu  = str(row.get('lieu', ''))
+                lieu  = lieu if lieu not in ('', 'nan', 'NaN', 'None') else ''
+                key   = (d, ath, lieu)
+                date_data_raw.setdefault(key, []).append(dist)
+            except Exception:
+                pass
+        date_data = {}
+        for (d, ath, lieu), dists_list in date_data_raw.items():
+            short = ' / '.join(p.split()[0] for p in ath.split('/'))
+            dists_str = ', '.join(sorted(set(dists_list)))
+            entry = '{} · {}{}'.format(short, dists_str, ' · ' + lieu if lieu else '')
+            date_data.setdefault(d, set()).add(entry)
+        date_data = {d: sorted(v) for d, v in date_data.items()}
+
+        # Dates avec données dans le mois affiché
+        days_this_month = sorted(
+            d for d in unique_dates if d.year == cur_year and d.month == cur_month
+        )
+
+        # Initialiser sélection (par défaut = toutes)
+        if 'cal_selected' not in st.session_state:
+            st.session_state['cal_selected'] = set(unique_dates)
+
+        # Calendrier visuel en HTML (non cliquable, juste indicateur)
+        cal_html = render_calendar(unique_dates, cur_year, cur_month,
+                                   date_data, st.session_state['cal_selected'])
+        if cal_html:
+            _components.html(cal_html, height=175, scrolling=False)
+
+        # Boutons cliquables SOUS le calendrier — un par jour avec données
+        if days_this_month:
+            st.markdown('<style>div[data-testid="stHorizontalBlock"]{gap:1px!important}div[data-testid="column"]{padding:0!important}div[data-testid="column"] button{padding:1px 2px!important;font-size:0.55rem!important;min-height:16px!important;line-height:1!important;border-radius:3px!important}</style>', unsafe_allow_html=True)
+            chunks = [days_this_month[i:i+6] for i in range(0, len(days_this_month), 6)]
             for chunk in chunks:
-                btn_cols = st.columns(len(chunk))
+                btn_cols = st.columns([1]*len(chunk))
                 for col_b, day_d in zip(btn_cols, chunk):
-                    is_sel = day_d in st.session_state['chip_sel']
-                    label  = day_d.strftime('%d/%m')
-                    if col_b.button(label, key='chip_' + day_d.isoformat(),
-                                    type='primary' if is_sel else 'secondary',
-                                    use_container_width=True):
-                        if day_d in st.session_state['chip_sel']:
-                            st.session_state['chip_sel'].discard(day_d)
-                        else:
-                            st.session_state['chip_sel'].add(day_d)
+                    is_sel   = day_d in st.session_state['cal_selected']
+                    btn_type = 'primary' if is_sel else 'secondary'
+                    if col_b.button(day_d.strftime('%d/%m'), key='day_' + day_d.isoformat(),
+                                    use_container_width=True, type=btn_type):
+                        sel = st.session_state['cal_selected']
+                        if day_d in sel: sel.discard(day_d)
+                        else: sel.add(day_d)
                         st.rerun()
 
-            # Appliquer filtre date
-            sel_iso = {d.strftime('%Y-%m-%d') for d in st.session_state['chip_sel']}
-            if sel_iso:
-                df_filt = df_filt[
-                    df_filt['date'].isin(sel_iso) | df_filt['date'].isin(['', 'nan'])
-                ]
-        else:
-            st.caption('Aucune session dans cette période.')
+        # Boutons Tout / Aucun
+        col_all, col_none = st.columns(2)
+        with col_all:
+            if st.button('Tout', key='cal_all', use_container_width=True):
+                st.session_state['cal_selected'] = set(unique_dates)
+                st.rerun()
+        with col_none:
+            if st.button('Aucun', key='cal_none', use_container_width=True):
+                st.session_state['cal_selected'] = set()
+                st.rerun()
 
-    st.divider()
-
+        # Appliquer le filtre
+        sel_set = st.session_state['cal_selected']
+        if sel_set:
+            sel_iso = {d.strftime('%Y-%m-%d') for d in sel_set}
+            df_filt = df_filt[df_filt['date'].isin(sel_iso) | df_filt['date'].isin(['', 'nan'])]
+        # Si aucune date → pas de filtre (tout afficher)
     # ── Sexe ──────────────────────────────────────────────────────────────────
     sexes = _vals('sexe')
-    if sexes:
+    if len(sexes) >= 1:
         st.markdown('**Sexe**')
         sel_sexe = st.multiselect('Sexe', sexes, default=[], key='f_sexe',
                                   label_visibility='collapsed')
@@ -2383,84 +2293,72 @@ with st.sidebar:
 
     # ── Discipline ────────────────────────────────────────────────────────────
     disciplines = _vals('discipline')
-    if disciplines:
+    if len(disciplines) >= 1:
         st.markdown('**Discipline**')
         sel_disc = st.multiselect('Discipline', disciplines, default=[],
                                   key='f_disc', label_visibility='collapsed')
         if sel_disc:
             df_filt = df_filt[df_filt['discipline'].isin(sel_disc) | df_filt['discipline'].isin(['', 'nan'])]
 
-    # ── Type de course ────────────────────────────────────────────────────────
-    types = _vals('type_course')
-    if types:
-        st.markdown('**Type de course**')
-        sel_type = st.multiselect('Type', types, default=[], key='f_type',
-                                  label_visibility='collapsed')
-        if sel_type:
-            df_filt = df_filt[df_filt['type_course'].isin(sel_type) | df_filt['type_course'].isin(['', 'nan'])]
-    else:
-        sel_type = []
-
-    # ── Distance (uniquement si Compétition sélectionnée) ────────────────────
-    _is_competition = (
-        'Compétition' in sel_type or
-        (not sel_type and 'Compétition' in _vals('type_course'))
-    )
+    # ── Épreuve ───────────────────────────────────────────────────────────────
+    st.markdown('**Épreuve**')
     _dist_raw = df_filt['distance'].replace('', float('nan')).replace('None', float('nan')).dropna()
-    _has_distances = not _dist_raw.empty
-
-    if _is_competition or _has_distances:
-        st.markdown('**Épreuve**')
-        _olympic_dists = ['200m', '500m', '1000m']
-        _avail = sorted(_dist_raw.unique().tolist()) if _has_distances else _olympic_dists
-        _dist_opts = sorted(set(_avail + _olympic_dists)) if _is_competition else _avail
-        if _dist_opts:
-            distance = st.selectbox('Distance', _dist_opts, index=0,
-                                    label_visibility='collapsed')
-        else:
-            distance = ''
-    else:
+    all_dist_vals = sorted(_dist_raw.unique().tolist()) if not df_filt.empty else ['250m']
+    if not all_dist_vals:
+        st.caption('Aucune épreuve — renseignez la distance dans le registre')
         distance = ''
+    else:
+        freq = _dist_raw.value_counts()
+        default_dist = freq.index[0] if not freq.empty else all_dist_vals[0]
+        default_idx  = all_dist_vals.index(default_dist) if default_dist in all_dist_vals else 0
+        distance = st.selectbox('Distance', all_dist_vals, index=default_idx,
+                                label_visibility='collapsed')
 
-    # ── Catégorie ─────────────────────────────────────────────────────────────
-    cats = _vals('categorie')
-    if cats:
-        st.markdown('**Catégorie**')
-        sel_cat = st.multiselect('Catégorie', cats, default=[], key='f_cat',
-                                 label_visibility='collapsed')
-        if sel_cat:
-            df_filt = df_filt[df_filt['categorie'].isin(sel_cat) | df_filt['categorie'].isin(['', 'nan'])]
+    # ── Athlètes ──────────────────────────────────────────────────────────────
+    st.markdown('**Athlètes**')
+    # N'afficher que les athlètes qui ont un fichier pour la distance sélectionnée
+    df_with_dist = df_filt[
+        (df_filt['distance'] == distance) | (df_filt['distance'].isin(['', 'nan']))
+    ]
+    all_athletes = sorted(df_with_dist['athlete'].dropna().unique().tolist())
+    selected = st.multiselect('', all_athletes,
+                              default=[],
+                              key='sel_athletes',
+                              label_visibility='collapsed')
 
     # ── Plus de filtres ───────────────────────────────────────────────────────
     with st.expander('➕ Plus de filtres'):
+        cats = _vals('categorie')
+        if cats:
+            st.markdown('**Catégorie**')
+            sel_cat = st.multiselect('Catégorie', cats, default=cats, key='f_cat',
+                                     label_visibility='collapsed')
+            if sel_cat:
+                df_filt = df_filt[df_filt['categorie'].isin(sel_cat) | df_filt['categorie'].isin(['', 'nan'])]
+
         bateaux = _vals('bateau')
         if bateaux:
             st.markdown('**Bateau**')
-            sel_bat = st.multiselect('Bateau', bateaux, default=[], key='f_bat',
+            sel_bat = st.multiselect('Bateau', bateaux, default=bateaux, key='f_bat',
                                      label_visibility='collapsed')
             if sel_bat:
                 df_filt = df_filt[df_filt['bateau'].isin(sel_bat) | df_filt['bateau'].isin(['', 'nan'])]
 
+        types = _vals('type_course')
+        if types:
+            st.markdown('**Type de course**')
+            sel_type = st.multiselect('Type', types, default=types, key='f_type',
+                                      label_visibility='collapsed')
+            if sel_type:
+                df_filt = df_filt[df_filt['type_course'].isin(sel_type) | df_filt['type_course'].isin(['', 'nan'])]
+
         lieux = _vals('lieu')
         if lieux:
             st.markdown('**Lieu**')
-            sel_lieu = st.multiselect('Lieu', lieux, default=[], key='f_lieu',
+            sel_lieu = st.multiselect('Lieu', lieux, default=lieux, key='f_lieu',
                                       label_visibility='collapsed')
             if sel_lieu:
                 df_filt = df_filt[df_filt['lieu'].isin(sel_lieu) | df_filt['lieu'].isin(['', 'nan'])]
-
-    # ── Athlètes ──────────────────────────────────────────────────────────────
-    st.divider()
-    st.markdown('**Athlètes**')
-    if distance:
-        df_with_dist = df_filt[
-            (df_filt['distance'] == distance) | df_filt['distance'].isin(['', 'nan'])
-        ]
-    else:
-        df_with_dist = df_filt
-    all_athletes = sorted(df_with_dist['athlete'].dropna().unique().tolist())
-    selected = st.multiselect('Athlètes', all_athletes, default=[],
-                              key='sel_athletes', label_visibility='collapsed')
 
     # ── Résolution des fichiers (session la plus récente par athlète) ──────────
     ATHLETES_FILES = {}
@@ -2474,7 +2372,8 @@ with st.sidebar:
         ATHLETES_FILES[ath] = chosen['fichier']
         session_labels[ath] = chosen['label']
     st.divider()
-    if st.session_state.get('username', '') == 'admin':
+    _is_admin = st.session_state.get('username', '') == 'admin'
+    if _is_admin:
         st.markdown('**Fenêtre signal**',
                     help='Ajuste la portion du signal affichée dans l\'onglet Signal')
         t_start = st.slider('Début zoom (s)', 0.0, 120.0, 3.0, 0.5)
@@ -2521,18 +2420,16 @@ _cache_hits = 0
 with st.spinner('Chargement des données…'):
     for name in _selected_with_file:
         fname = ATHLETES_FILES.get(name, '')
-        fpath = os.path.join(DATA_DIR, fname) if fname else ''
-        if fname and os.path.exists(fpath):
+        if fname:
             cp = _cache_path(fname, fc, md, mh)
-            _from_cache = (os.path.exists(cp) and
-                           os.path.getmtime(cp) >= os.path.getmtime(fpath))
-            if _from_cache:
+            if os.path.exists(cp):
                 _cache_hits += 1
             s, sig = load_with_cache(fname, fc, md, mh)
             raw_strokes[name]=s; raw_signals[name]=sig
+            if not s:
+                st.warning('Données introuvables pour {} — vérifiez API Phyling'.format(name))
         else:
             raw_strokes[name]=[]; raw_signals[name]={}
-            st.warning('Fichier introuvable : {} — vérifiez registre.csv'.format(fname))
 
 # Remplacer selected par la liste effective
 selected = _selected_with_file
@@ -2555,14 +2452,11 @@ st.markdown(f'<div class="app-sub">Méthode : creux locaux · {distance} · '
 
 
 # ── ONGLETS ───────────────────────────────────────────────────────────────────
-_is_admin = st.session_state.get('username', '') == 'admin'
-_tab_labels = ['① Signal', '② Analyse individuelle', '③ Comparaison']
-if _is_admin:
-    _tab_labels.append('⚙️ Registre')
-
-_tabs = st.tabs(_tab_labels)
-t1, t2, t3 = _tabs[0], _tabs[1], _tabs[2]
-t_reg = _tabs[3] if _is_admin else None
+t1, t2, t3 = st.tabs([
+    '① Signal',
+    '② Analyse individuelle',
+    '③ Comparaison',
+])
 
 
 # ══ ① SIGNAL ════════════════════════════════════════════════════════════════
@@ -2675,12 +2569,6 @@ with t1:
                         f'</div>',
                         unsafe_allow_html=True)
             st.write('')
-
-
-# ══ ⚙️ REGISTRE (admin) ════════════════════════════════════════════════════
-if _is_admin and t_reg is not None:
-    with t_reg:
-        render_registre_editor(df_registre)
 
 
 # ══ ② ANALYSE INDIVIDUELLE ══════════════════════════════════════════════════
