@@ -127,7 +127,7 @@ def _parse_record_meta(rec):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_phyling_records(page_size=200, days_back=180):
+def fetch_phyling_records(page_size=500, days_back=30):
     """
     Récupère les records kayak FFCK depuis l'API Phyling.
     Cache mémoire 1h + persistance disque pour démarrage instantané.
@@ -2244,7 +2244,7 @@ with st.sidebar:
         df_registre = load_registre()
     n_sessions  = len(df_registre)
     n_athletes  = df_registre['athlete'].nunique() if not df_registre.empty else 0
-    st.caption(f'{n_sessions} session(s) · {n_athletes} athlète(s) · API Phyling')
+    st.caption(f'{n_sessions} session(s) · {n_athletes} athlète(s) · 30 derniers jours')
 
     df_filt = df_registre.copy()
 
