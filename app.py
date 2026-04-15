@@ -58,16 +58,98 @@ def _phyling_headers():
     }
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_phyling_records(page_size=200):
+# Chemin du cache disque pour les records (survit aux reboots)
+_RECORDS_CACHE = os.path.join(_CACHE_ROOT, "records_cache.pkl")
+
+# Mapping group_name → discipline + sexe
+_GROUP_META = {
+    "Kayak_D":  {"discipline": "Kayak", "sexe": "F"},
+    "Kayak_H":  {"discipline": "Kayak", "sexe": "H"},
+    "Canoe_D":  {"discipline": "Canoë", "sexe": "F"},
+    "Canoe_H":  {"discipline": "Canoë", "sexe": "H"},
+    "Kayak":    {"discipline": "Kayak", "sexe": ""},
+    "Paracanoe":{"discipline": "Kayak", "sexe": ""},
+}
+
+# Mots-clés pour détecter une compétition depuis le commentaire
+_COMPE_KEYWORDS = {"fa", "fb", "finale", "sf", "demi", "series", "serie",
+                   "course", "race", "championnat", "coupe", "cup"}
+
+
+def _parse_record_meta(rec):
     """
-    Récupère tous les records kayak FFCK depuis l'API Phyling.
-    Retourne une liste de dicts prêts pour le registre.
+    Extrait toutes les métadonnées disponibles depuis un record API Phyling.
+    Retourne un dict avec discipline, sexe, bateau, type_course, lieu, categorie.
     """
-    import requests as _req
+    import json as _json
+
+    # Bateau depuis other_data
+    other = {}
+    try:
+        other = _json.loads(rec.get("other_data", "{}") or "{}")
+    except Exception:
+        pass
+    bateau = other.get("boat", "")
+    if bateau:
+        bateau = bateau.upper()
+
+    # Discipline + sexe depuis group_name
+    group = rec.get("group_name", "")
+    meta_group = _GROUP_META.get(group, {})
+    discipline = meta_group.get("discipline", "Kayak")
+    sexe       = meta_group.get("sexe", "")
+
+    # Si pas de groupe, déduire depuis le bateau
+    if not discipline and bateau:
+        discipline = "Canoë" if bateau.startswith("C") else "Kayak"
+
+    # Type de course depuis exercise_name + comment
+    comment_global = str(rec.get("comment", "") or "").lower()
+    exercise_global = str(rec.get("exercise_name", "") or "").lower()
+    is_compe = any(kw in comment_global or kw in exercise_global
+                   for kw in _COMPE_KEYWORDS)
+    type_course = "Compétition" if is_compe else "Entraînement"
+
+    # Lieu : pas disponible directement, laisser vide (éditable via registre)
+    lieu = ""
+
+    # Catégorie : pas disponible directement sans appel users/all
+    categorie = ""
+
+    return {
+        "discipline":  discipline,
+        "sexe":        sexe,
+        "bateau":      bateau,
+        "type_course": type_course,
+        "lieu":        lieu,
+        "categorie":   categorie,
+    }
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_phyling_records(page_size=200, days_back=180):
+    """
+    Récupère les records kayak FFCK depuis l'API Phyling.
+    Cache mémoire 1h + persistance disque pour démarrage instantané.
+    """
+    import requests as _req, pickle
+    from datetime import datetime as _dt, timedelta as _td
+
+    # ── Charger depuis le cache disque si récent (< 1h) ──────────────────────
+    if os.path.exists(_RECORDS_CACHE):
+        try:
+            with open(_RECORDS_CACHE, "rb") as f:
+                cached = pickle.load(f)
+            age_min = (_dt.now() - cached["ts"]).total_seconds() / 60
+            if age_min < 60:
+                return cached["records"]
+        except Exception:
+            pass
+
     headers = _phyling_headers()
     all_records = []
     page = 1
+    cutoff = (_dt.now() - _td(days=days_back)).strftime("%Y-%m-%d")
 
     while True:
         r = _req.post(
@@ -83,8 +165,9 @@ def fetch_phyling_records(page_size=200):
         if not records:
             break
 
+        stop_pagination = False
         for rec in records:
-            # Garder uniquement les records kayak FFCK avec sélections
+            # Filtrer kayak FFCK avec sélections
             if rec.get("sport_name") != "kayak":
                 continue
             if rec.get("client_id") != PHYLING_CLIENT_ID:
@@ -93,6 +176,16 @@ def fetch_phyling_records(page_size=200):
             if not sels:
                 continue
 
+            # Arrêter si on dépasse la fenêtre temporelle
+            try:
+                rec_date = _dt.strptime(rec["date"], "%d/%m/%Y %H:%M:%S").strftime("%Y-%m-%d")
+            except Exception:
+                rec_date = rec.get("date", "")[:10]
+            if rec_date < cutoff:
+                stop_pagination = True
+                continue
+
+            # Athlète
             users = rec.get("users", [])
             athlete = " ".join([
                 u.get("firstname", "").capitalize() + " " +
@@ -100,79 +193,66 @@ def fetch_phyling_records(page_size=200):
                 for u in users
             ]).strip() if users else "Inconnu"
 
-            # Parser la date
-            date_str = ""
             try:
-                from datetime import datetime as _dt
-                date_str = _dt.strptime(
-                    rec["date"], "%d/%m/%Y %H:%M:%S"
-                ).strftime("%Y-%m-%d")
+                heure_str = _dt.strptime(rec["date"], "%d/%m/%Y %H:%M:%S").strftime("%H:%M")
             except Exception:
-                date_str = rec.get("date", "")[:10]
+                heure_str = ""
 
-            heure_str = ""
-            try:
-                heure_str = _dt.strptime(
-                    rec["date"], "%d/%m/%Y %H:%M:%S"
-                ).strftime("%H:%M")
-            except Exception:
-                pass
-
-            # Extraire métadonnées depuis other_data
-            import json as _json
-            other = {}
-            try:
-                other = _json.loads(rec.get("other_data", "{}"))
-            except Exception:
-                pass
-            bateau = other.get("boat", "").upper()
-
-            # Type de course
-            type_course = "Compétition" if rec.get("exercise_name", "") in [
-                "Finale A", "Finale B", "FA", "FB", "SF", "Course"
-            ] else "Entraînement"
+            # Métadonnées enrichies
+            meta = _parse_record_meta(rec)
 
             # Une ligne par sélection
             for sel in sels:
                 sel_id  = sel.get("id")
                 sel_num = sel.get("num", 1)
-                comment = sel.get("comment", rec.get("comment", ""))
-                ex_name = sel.get("exercise_name", rec.get("exercise_name", ""))
+                comment = str(sel.get("comment", rec.get("comment", "")) or "")
+                ex_name = str(sel.get("exercise_name", rec.get("exercise_name", "")) or "")
 
-                # Distance depuis comment ou exercise_name
+                # Distance
                 dist = ""
-                for text in [comment, ex_name]:
-                    m = re.search(r"(\d+)\s*m", str(text), re.IGNORECASE)
+                for text in [comment, ex_name, str(rec.get("comment",""))]:
+                    m = re.search(r"(\d+)\s*m", text, re.IGNORECASE)
                     if m and m.group(1) in {"200","250","500","1000","2000"}:
                         dist = m.group(1) + "m"
                         break
 
-                # Clé unique : rec_id:sel_id
-                fichier_key = f"{rec['id']}:{sel_id}"
+                # Type course au niveau sélection (peut raffiner)
+                sel_comment = comment.lower()
+                sel_is_compe = any(kw in sel_comment for kw in _COMPE_KEYWORDS)
+                type_course_sel = "Compétition" if sel_is_compe else meta["type_course"]
 
                 all_records.append({
-                    "fichier":     fichier_key,
+                    "fichier":     f"{rec['id']}:{sel_id}",
                     "athlete":     athlete,
                     "distance":    dist,
-                    "date":        date_str,
+                    "date":        rec_date,
                     "heure":       heure_str,
                     "sel":         str(sel_num),
                     "notes":       comment,
-                    "discipline":  "Kayak",
-                    "sexe":        "",
-                    "categorie":   "",
-                    "bateau":      bateau,
-                    "type_course": type_course,
-                    "lieu":        "",
+                    "discipline":  meta["discipline"],
+                    "sexe":        meta["sexe"],
+                    "categorie":   meta["categorie"],
+                    "bateau":      meta["bateau"],
+                    "type_course": type_course_sel,
+                    "lieu":        meta["lieu"],
                     "rec_id":      rec["id"],
                     "sel_id":      sel_id,
                     "group_name":  rec.get("group_name", ""),
                 })
 
         total = data.get("total", 0)
-        if page * page_size >= total:
+        if stop_pagination or page * page_size >= total:
             break
         page += 1
+
+    # ── Persister sur disque ──────────────────────────────────────────────────
+    try:
+        os.makedirs(_CACHE_ROOT, exist_ok=True)
+        with open(_RECORDS_CACHE, "wb") as f:
+            import pickle
+            pickle.dump({"records": all_records, "ts": _dt.now()}, f)
+    except Exception:
+        pass
 
     return all_records
 
@@ -2149,6 +2229,13 @@ with st.sidebar:
     # Bouton de rafraîchissement
     if st.button('🔄 Actualiser depuis Phyling', use_container_width=True,
                  help="Recharge la liste des sessions depuis l'API Phyling"):
+        # Supprimer le cache disque des records pour forcer un rechargement
+        import pickle as _pk
+        if os.path.exists(_RECORDS_CACHE):
+            try:
+                os.remove(_RECORDS_CACHE)
+            except Exception:
+                pass
         st.cache_data.clear()
         st.rerun()
 
@@ -2417,19 +2504,52 @@ _selected_with_file = [n for n in selected if n in ATHLETES_FILES]
 
 raw_strokes, raw_signals = {}, {}
 _cache_hits = 0
-with st.spinner('Chargement des données…'):
-    for name in _selected_with_file:
-        fname = ATHLETES_FILES.get(name, '')
-        if fname:
-            cp = _cache_path(fname, fc, md, mh)
-            if os.path.exists(cp):
-                _cache_hits += 1
-            s, sig = load_with_cache(fname, fc, md, mh)
-            raw_strokes[name]=s; raw_signals[name]=sig
-            if not s:
-                st.warning('Données introuvables pour {} — vérifiez API Phyling'.format(name))
-        else:
-            raw_strokes[name]=[]; raw_signals[name]={}
+
+def _load_one(name):
+    fname = ATHLETES_FILES.get(name, '')
+    if not fname:
+        return name, [], {}
+    cp = _cache_path(fname, fc, md, mh)
+    from_cache = os.path.exists(cp)
+    s, sig = load_with_cache(fname, fc, md, mh)
+    return name, s, sig, from_cache
+
+# Vérifier combien sont en cache
+_n_cached = sum(
+    1 for n in _selected_with_file
+    if os.path.exists(_cache_path(ATHLETES_FILES.get(n,''), fc, md, mh))
+    and ATHLETES_FILES.get(n,'')
+)
+_n_to_dl = len(_selected_with_file) - _n_cached
+
+if _n_to_dl > 0:
+    spinner_msg = (
+        f'Téléchargement de {_n_to_dl} session(s) depuis Phyling…'
+        if _n_cached == 0
+        else f'{_n_cached} en cache · téléchargement de {_n_to_dl} session(s)…'
+    )
+else:
+    spinner_msg = 'Chargement depuis le cache…'
+
+with st.spinner(spinner_msg):
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(_load_one, n): n for n in _selected_with_file}
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+                name, s, sig = result[0], result[1], result[2]
+                from_cache = result[3] if len(result) > 3 else False
+                raw_strokes[name] = s
+                raw_signals[name] = sig
+                if from_cache:
+                    _cache_hits += 1
+                if not s:
+                    st.warning('Données introuvables pour {} — vérifiez API Phyling'.format(name))
+            except Exception as e:
+                name = futures[future]
+                raw_strokes[name] = []
+                raw_signals[name] = {}
 
 # Remplacer selected par la liste effective
 selected = _selected_with_file
