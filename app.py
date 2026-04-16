@@ -58,141 +58,33 @@ def _phyling_headers():
     }
 
 
-# Chemin du cache disque pour les records (survit aux reboots)
-_RECORDS_CACHE = os.path.join(_CACHE_ROOT, "records_cache.pkl")
-
-# Mapping group_name → discipline + sexe
-_GROUP_META = {
-    "Kayak_D":  {"discipline": "Kayak", "sexe": "F"},
-    "Kayak_H":  {"discipline": "Kayak", "sexe": "H"},
-    "Canoe_D":  {"discipline": "Canoë", "sexe": "F"},
-    "Canoe_H":  {"discipline": "Canoë", "sexe": "H"},
-    "Kayak":    {"discipline": "Kayak", "sexe": ""},
-    "Paracanoe":{"discipline": "Kayak", "sexe": ""},
-}
-
-# Mots-clés pour détecter une compétition depuis le commentaire
-_COMPE_KEYWORDS = {"fa", "fb", "finale", "sf", "demi", "series", "serie",
-                   "course", "race", "championnat", "coupe", "cup"}
-
-
-def _parse_record_meta(rec):
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_phyling_records(page_size=200):
     """
-    Extrait toutes les métadonnées disponibles depuis un record API Phyling.
-    Retourne un dict avec discipline, sexe, bateau, type_course, lieu, categorie.
+    Récupère tous les records kayak FFCK depuis l'API Phyling.
+    Retourne une liste de dicts prêts pour le registre.
     """
-    import json as _json
-
-    # Bateau depuis other_data
-    other = {}
-    try:
-        other = _json.loads(rec.get("other_data", "{}") or "{}")
-    except Exception:
-        pass
-    bateau = other.get("boat", "")
-    if bateau:
-        bateau = bateau.upper()
-
-    # Discipline + sexe depuis group_name
-    group = rec.get("group_name", "")
-    meta_group = _GROUP_META.get(group, {})
-    discipline = meta_group.get("discipline", "Kayak")
-    sexe       = meta_group.get("sexe", "")
-
-    # Si pas de groupe, déduire depuis le bateau
-    if not discipline and bateau:
-        discipline = "Canoë" if bateau.startswith("C") else "Kayak"
-
-    # Type de course depuis exercise_name + comment
-    comment_global = str(rec.get("comment", "") or "").lower()
-    exercise_global = str(rec.get("exercise_name", "") or "").lower()
-    is_compe = any(kw in comment_global or kw in exercise_global
-                   for kw in _COMPE_KEYWORDS)
-    type_course = "Compétition" if is_compe else "Entraînement"
-
-    # Lieu : pas disponible directement, laisser vide (éditable via registre)
-    lieu = ""
-
-    # Catégorie : pas disponible directement sans appel users/all
-    categorie = ""
-
-    return {
-        "discipline":  discipline,
-        "sexe":        sexe,
-        "bateau":      bateau,
-        "type_course": type_course,
-        "lieu":        lieu,
-        "categorie":   categorie,
-    }
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_phyling_records(page_size=100, days_back=30):
-    """
-    Récupère les records kayak FFCK depuis l'API Phyling.
-    Cache mémoire 1h + persistance disque pour démarrage instantané.
-    """
-    import requests as _req, pickle
-    from datetime import datetime as _dt, timedelta as _td
-
-    # ── Charger depuis le cache disque si récent (< 1h) ──────────────────────
-    if os.path.exists(_RECORDS_CACHE):
-        try:
-            with open(_RECORDS_CACHE, "rb") as f:
-                cached = pickle.load(f)
-            age_min = (_dt.now() - cached["ts"]).total_seconds() / 60
-            if age_min < 60:
-                return cached["records"]
-        except Exception:
-            pass
-
+    import requests as _req
     headers = _phyling_headers()
     all_records = []
     page = 1
-    cutoff = (_dt.now() - _td(days=days_back)).strftime("%Y-%m-%d")
 
     while True:
-        try:
-            r = _req.post(
-                f"{PHYLING_BASE_URL}/records/all",
-                headers=headers,
-                json={
-                    "type": "associated",
-                    "pageId": page,
-                    "pageSize": page_size,
-                    "clientIds": [PHYLING_CLIENT_ID],
-                    "userIds": [],
-                    "deviceIds": [],
-                    "groupIds": [],
-                    "exerciseIds": [],
-                    "onlyFavorite": False,
-                },
-                timeout=60,
-            )
-        except Exception as e:
-            # Timeout ou erreur réseau → utiliser le cache disque si disponible
-            if os.path.exists(_RECORDS_CACHE):
-                try:
-                    with open(_RECORDS_CACHE, "rb") as f:
-                        cached = pickle.load(f)
-                    return cached["records"]
-                except Exception:
-                    pass
-            return all_records  # Retourner ce qu'on a déjà récupéré
-
+        r = _req.post(
+            f"{PHYLING_BASE_URL}/records/all",
+            headers=headers,
+            json={"pageId": page, "pageSize": page_size},
+            timeout=30,
+        )
         if r.status_code != 200:
             break
-        try:
-            data = r.json()
-        except Exception:
-            break
+        data = r.json()
         records = data.get("records", [])
         if not records:
             break
 
-        stop_pagination = False
         for rec in records:
-            # Filtrer kayak FFCK avec sélections
+            # Garder uniquement les records kayak FFCK avec sélections
             if rec.get("sport_name") != "kayak":
                 continue
             if rec.get("client_id") != PHYLING_CLIENT_ID:
@@ -201,16 +93,6 @@ def fetch_phyling_records(page_size=100, days_back=30):
             if not sels:
                 continue
 
-            # Arrêter si on dépasse la fenêtre temporelle
-            try:
-                rec_date = _dt.strptime(rec["date"], "%d/%m/%Y %H:%M:%S").strftime("%Y-%m-%d")
-            except Exception:
-                rec_date = rec.get("date", "")[:10]
-            if rec_date < cutoff:
-                stop_pagination = True
-                continue
-
-            # Athlète
             users = rec.get("users", [])
             athlete = " ".join([
                 u.get("firstname", "").capitalize() + " " +
@@ -218,66 +100,79 @@ def fetch_phyling_records(page_size=100, days_back=30):
                 for u in users
             ]).strip() if users else "Inconnu"
 
+            # Parser la date
+            date_str = ""
             try:
-                heure_str = _dt.strptime(rec["date"], "%d/%m/%Y %H:%M:%S").strftime("%H:%M")
+                from datetime import datetime as _dt
+                date_str = _dt.strptime(
+                    rec["date"], "%d/%m/%Y %H:%M:%S"
+                ).strftime("%Y-%m-%d")
             except Exception:
-                heure_str = ""
+                date_str = rec.get("date", "")[:10]
 
-            # Métadonnées enrichies
-            meta = _parse_record_meta(rec)
+            heure_str = ""
+            try:
+                heure_str = _dt.strptime(
+                    rec["date"], "%d/%m/%Y %H:%M:%S"
+                ).strftime("%H:%M")
+            except Exception:
+                pass
+
+            # Extraire métadonnées depuis other_data
+            import json as _json
+            other = {}
+            try:
+                other = _json.loads(rec.get("other_data", "{}"))
+            except Exception:
+                pass
+            bateau = other.get("boat", "").upper()
+
+            # Type de course
+            type_course = "Compétition" if rec.get("exercise_name", "") in [
+                "Finale A", "Finale B", "FA", "FB", "SF", "Course"
+            ] else "Entraînement"
 
             # Une ligne par sélection
             for sel in sels:
                 sel_id  = sel.get("id")
                 sel_num = sel.get("num", 1)
-                comment = str(sel.get("comment", rec.get("comment", "")) or "")
-                ex_name = str(sel.get("exercise_name", rec.get("exercise_name", "")) or "")
+                comment = sel.get("comment", rec.get("comment", ""))
+                ex_name = sel.get("exercise_name", rec.get("exercise_name", ""))
 
-                # Distance
+                # Distance depuis comment ou exercise_name
                 dist = ""
-                for text in [comment, ex_name, str(rec.get("comment",""))]:
-                    m = re.search(r"(\d+)\s*m", text, re.IGNORECASE)
+                for text in [comment, ex_name]:
+                    m = re.search(r"(\d+)\s*m", str(text), re.IGNORECASE)
                     if m and m.group(1) in {"200","250","500","1000","2000"}:
                         dist = m.group(1) + "m"
                         break
 
-                # Type course au niveau sélection (peut raffiner)
-                sel_comment = comment.lower()
-                sel_is_compe = any(kw in sel_comment for kw in _COMPE_KEYWORDS)
-                type_course_sel = "Compétition" if sel_is_compe else meta["type_course"]
+                # Clé unique : rec_id:sel_id
+                fichier_key = f"{rec['id']}:{sel_id}"
 
                 all_records.append({
-                    "fichier":     f"{rec['id']}:{sel_id}",
+                    "fichier":     fichier_key,
                     "athlete":     athlete,
                     "distance":    dist,
-                    "date":        rec_date,
+                    "date":        date_str,
                     "heure":       heure_str,
                     "sel":         str(sel_num),
                     "notes":       comment,
-                    "discipline":  meta["discipline"],
-                    "sexe":        meta["sexe"],
-                    "categorie":   meta["categorie"],
-                    "bateau":      meta["bateau"],
-                    "type_course": type_course_sel,
-                    "lieu":        meta["lieu"],
+                    "discipline":  "Kayak",
+                    "sexe":        "",
+                    "categorie":   "",
+                    "bateau":      bateau,
+                    "type_course": type_course,
+                    "lieu":        "",
                     "rec_id":      rec["id"],
                     "sel_id":      sel_id,
                     "group_name":  rec.get("group_name", ""),
                 })
 
         total = data.get("total", 0)
-        if stop_pagination or page * page_size >= total:
+        if page * page_size >= total:
             break
         page += 1
-
-    # ── Persister sur disque ──────────────────────────────────────────────────
-    try:
-        os.makedirs(_CACHE_ROOT, exist_ok=True)
-        with open(_RECORDS_CACHE, "wb") as f:
-            import pickle
-            pickle.dump({"records": all_records, "ts": _dt.now()}, f)
-    except Exception:
-        pass
 
     return all_records
 
@@ -1160,39 +1055,21 @@ def fig_heatmap(strokes, name, c):
 
 def fig_quarts_individuel(strokes, name):
     quarters = get_quarters(strokes)
-    fig, (ax1,ax2) = plt.subplots(1,2,figsize=(14,5)); style_fig(fig)
-    style_ax(ax1); style_ax(ax2)
-    profiles = []
+    fig, ax1 = plt.subplots(figsize=(8,5)); style_fig(fig); style_ax(ax1)
     for q_str,qc,ql in zip(quarters,QUART_COLORS,QUART_LABELS):
-        if not q_str: profiles.append(None); continue
+        if not q_str: continue
         mat_q = np.vstack([s['acc_norm'] for s in q_str])
         mu_q  = mat_q.mean(0); sd_q = mat_q.std(0)
         auc_q = np.mean([s['auc_pos'] for s in q_str])
-        profiles.append(mu_q)
         ax1.fill_between(xn,mu_q-sd_q,mu_q+sd_q,alpha=0.10,color=qc)
         ax1.plot(xn,mu_q,color=qc,lw=2.5,
                  label=f'{ql}  (n={len(q_str)}, AUC+={auc_q:.4f})')
     ax1.axhline(0,color='#616161',lw=0.8,ls='--',alpha=0.6)
     ax1.set_xlabel('Cycle normalisé (%)',fontsize=10)
     ax1.set_ylabel('acc_x (m/s²)',fontsize=10)
-    ax1.set_title('Profils moyens par quart',fontsize=11,fontweight='bold')
-    ax1.legend(fontsize=8,loc='lower right')
-
-    ref = profiles[0]
-    if ref is not None:
-        for mu_q,qc,ql in zip(profiles[1:],QUART_COLORS[1:],QUART_LABELS[1:]):
-            if mu_q is None: continue
-            diff = mu_q-ref
-            ax2.fill_between(xn,diff,0,alpha=0.18,color=qc)
-            ax2.plot(xn,diff,color=qc,lw=2.5,label=f'{ql} − 1er')
-        ax2.axhline(0,color='k',lw=1,alpha=0.5)
-    ax2.set_xlabel('Cycle normalisé (%)',fontsize=10)
-    ax2.set_ylabel('Δ acc_x vs 1er quart (m/s²)',fontsize=10)
-    ax2.set_title('Différence vs début de course\n(+ = plus puissant · − = fatigue)',
+    ax1.set_title(f'{name}  ·  Profils moyens par quart de course',
                   fontsize=11,fontweight='bold')
-    ax2.legend(fontsize=8)
-    fig.suptitle(f'{name}  ·  Évolution du coup par quart de course',
-                 fontsize=12,fontweight='bold')
+    ax1.legend(fontsize=8,loc='lower right')
     plt.tight_layout(); return fig
 
 
@@ -1301,31 +1178,20 @@ def fig_dendrogrammes(strokes_dict, name_list):
                 transform=ax.transAxes,fontsize=13)
         return fig
     means_d = {n:np.vstack([s['acc_norm'] for s in strokes_dict[n]]).mean(0) for n in valid}
-    def feat(n):
-        df_s=to_df(strokes_dict[n])
-        return [df_s['auc_pos'].mean(),df_s['auc_neg'].abs().mean(),
-                df_s['rfd'].mean()/100,df_s['jerk_rms'].mean()/1000,
-                df_s['pos_pic_pct'].mean()/100,df_s['sym_ratio'].mean(),
-                df_s['duration'].mean()]
-    fig,axes=plt.subplots(1,2,figsize=(16,6)); style_fig(fig)
-    for ax in axes: style_ax(ax)
-    fig.suptitle('Similarité entre athlètes  ·  Clustering hiérarchique (Ward)',
-                 fontsize=13,fontweight='bold')
-    for ax,(title,dist) in zip(axes,[
-        ('Forme du coup\n(corrélation profils normalisés)',
-         pdist([means_d[n] for n in valid],metric='correlation')),
-        ('Métriques scalaires\n(AUC+, AUC-, RFD, Jerk, pos_pic, sym, durée)',
-         pdist([feat(n) for n in valid],metric='euclidean'))]):
-        Z = linkage(dist,method='ward')
-        dendrogram(Z,labels=[n.split()[-1] for n in valid],ax=ax,
-                   leaf_rotation=30,leaf_font_size=11,
-                   color_threshold=0.6*max(Z[:,2]))
-        for lbl in ax.get_xticklabels():
-            for n in valid:
-                if n.split()[-1]==lbl.get_text():
-                    lbl.set_color(ath_color(n,name_list))
-        ax.set_title(title,fontsize=10,fontweight='bold')
-        ax.set_ylabel('Distance (Ward)',fontsize=9)
+    dist = pdist([means_d[n] for n in valid], metric='correlation')
+    Z    = linkage(dist, method='ward')
+    fig, ax = plt.subplots(figsize=(max(8, len(valid)*1.2), 5))
+    style_fig(fig); style_ax(ax)
+    dendrogram(Z, labels=[n.split()[-1] for n in valid], ax=ax,
+               leaf_rotation=30, leaf_font_size=11,
+               color_threshold=0.6*max(Z[:,2]))
+    for lbl in ax.get_xticklabels():
+        for n in valid:
+            if n.split()[-1]==lbl.get_text():
+                lbl.set_color(ath_color(n,name_list))
+    ax.set_title('Similarité entre athlètes — forme du coup (acc_x)',
+                 fontsize=11, fontweight='bold')
+    ax.set_ylabel('Distance (Ward)', fontsize=9)
     plt.tight_layout(); return fig
 
 
@@ -2254,13 +2120,6 @@ with st.sidebar:
     # Bouton de rafraîchissement
     if st.button('🔄 Actualiser depuis Phyling', use_container_width=True,
                  help="Recharge la liste des sessions depuis l'API Phyling"):
-        # Supprimer le cache disque des records pour forcer un rechargement
-        import pickle as _pk
-        if os.path.exists(_RECORDS_CACHE):
-            try:
-                os.remove(_RECORDS_CACHE)
-            except Exception:
-                pass
         st.cache_data.clear()
         st.rerun()
 
@@ -2269,7 +2128,7 @@ with st.sidebar:
         df_registre = load_registre()
     n_sessions  = len(df_registre)
     n_athletes  = df_registre['athlete'].nunique() if not df_registre.empty else 0
-    st.caption(f'{n_sessions} session(s) · {n_athletes} athlète(s) · 30 derniers jours')
+    st.caption(f'{n_sessions} session(s) · {n_athletes} athlète(s) · API Phyling')
 
     df_filt = df_registre.copy()
 
@@ -2299,178 +2158,104 @@ with st.sidebar:
 
     if parsed_dates:
         unique_dates = sorted(set(parsed_dates))
-        all_months   = sorted(set((d.year, d.month) for d in unique_dates))
 
-        # Navigation mois
-        if ('cal_month_idx' not in st.session_state or
-                st.session_state['cal_month_idx'] >= len(all_months)):
-            st.session_state['cal_month_idx'] = len(all_months) - 1
-        cal_idx = st.session_state['cal_month_idx']
+        # ── Sélecteur de plage de dates (Du / Au) ────────────────────────────
+        st.markdown('**Période**')
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            date_from = st.date_input('Du', value=unique_dates[0],
+                                      min_value=unique_dates[0],
+                                      max_value=unique_dates[-1],
+                                      key='date_from')
+        with col_d2:
+            date_to = st.date_input('Au', value=unique_dates[-1],
+                                    min_value=unique_dates[0],
+                                    max_value=unique_dates[-1],
+                                    key='date_to')
 
-        col_prev, col_mid, col_next = st.columns([1, 4, 1])
-        with col_prev:
-            if st.button('‹', key='cal_prev', disabled=(cal_idx == 0),
-                         use_container_width=True):
-                st.session_state['cal_month_idx'] -= 1
-                st.rerun()
-        with col_next:
-            if st.button('›', key='cal_next',
-                         disabled=(cal_idx >= len(all_months) - 1),
-                         use_container_width=True):
-                st.session_state['cal_month_idx'] += 1
-                st.rerun()
+        # Appliquer le filtre de plage
+        date_from_str = date_from.strftime('%Y-%m-%d')
+        date_to_str   = date_to.strftime('%Y-%m-%d')
+        df_filt = df_filt[
+            (df_filt['date'] >= date_from_str) &
+            (df_filt['date'] <= date_to_str)
+        ]
 
-        cur_year, cur_month = all_months[cal_idx]
-        MONTHS_FR = ['','Janvier','Février','Mars','Avril','Mai','Juin',
-                     'Juillet','Août','Septembre','Octobre','Novembre','Décembre']
-        # titre géré par render_calendar
-
-        # Construire tooltips
-        date_data_raw = {}
-        for _, row in df_filt.iterrows():
-            try:
-                d     = _dt.strptime(str(row['date']), '%Y-%m-%d').date()
-                ath   = str(row['athlete'])
-                dist  = str(row.get('distance', '')) or '?'
-                lieu  = str(row.get('lieu', ''))
-                lieu  = lieu if lieu not in ('', 'nan', 'NaN', 'None') else ''
-                key   = (d, ath, lieu)
-                date_data_raw.setdefault(key, []).append(dist)
-            except Exception:
-                pass
-        date_data = {}
-        for (d, ath, lieu), dists_list in date_data_raw.items():
-            short = ' / '.join(p.split()[0] for p in ath.split('/'))
-            dists_str = ', '.join(sorted(set(dists_list)))
-            entry = '{} · {}{}'.format(short, dists_str, ' · ' + lieu if lieu else '')
-            date_data.setdefault(d, set()).add(entry)
-        date_data = {d: sorted(v) for d, v in date_data.items()}
-
-        # Dates avec données dans le mois affiché
-        days_this_month = sorted(
-            d for d in unique_dates if d.year == cur_year and d.month == cur_month
-        )
-
-        # Initialiser sélection (par défaut = toutes)
-        if 'cal_selected' not in st.session_state:
-            st.session_state['cal_selected'] = set(unique_dates)
-
-        # Calendrier visuel en HTML (non cliquable, juste indicateur)
-        cal_html = render_calendar(unique_dates, cur_year, cur_month,
-                                   date_data, st.session_state['cal_selected'])
-        if cal_html:
-            _components.html(cal_html, height=175, scrolling=False)
-
-        # Boutons cliquables SOUS le calendrier — un par jour avec données
-        if days_this_month:
-            st.markdown('<style>div[data-testid="stHorizontalBlock"]{gap:1px!important}div[data-testid="column"]{padding:0!important}div[data-testid="column"] button{padding:1px 2px!important;font-size:0.55rem!important;min-height:16px!important;line-height:1!important;border-radius:3px!important}</style>', unsafe_allow_html=True)
-            chunks = [days_this_month[i:i+6] for i in range(0, len(days_this_month), 6)]
-            for chunk in chunks:
-                btn_cols = st.columns([1]*len(chunk))
-                for col_b, day_d in zip(btn_cols, chunk):
-                    is_sel   = day_d in st.session_state['cal_selected']
-                    btn_type = 'primary' if is_sel else 'secondary'
-                    if col_b.button(day_d.strftime('%d/%m'), key='day_' + day_d.isoformat(),
-                                    use_container_width=True, type=btn_type):
-                        sel = st.session_state['cal_selected']
-                        if day_d in sel: sel.discard(day_d)
-                        else: sel.add(day_d)
-                        st.rerun()
-
-        # Boutons Tout / Aucun
-        col_all, col_none = st.columns(2)
-        with col_all:
-            if st.button('Tout', key='cal_all', use_container_width=True):
-                st.session_state['cal_selected'] = set(unique_dates)
-                st.rerun()
-        with col_none:
-            if st.button('Aucun', key='cal_none', use_container_width=True):
-                st.session_state['cal_selected'] = set()
-                st.rerun()
-
-        # Appliquer le filtre
-        sel_set = st.session_state['cal_selected']
-        if sel_set:
-            sel_iso = {d.strftime('%Y-%m-%d') for d in sel_set}
-            df_filt = df_filt[df_filt['date'].isin(sel_iso) | df_filt['date'].isin(['', 'nan'])]
-        # Si aucune date → pas de filtre (tout afficher)
     # ── Sexe ──────────────────────────────────────────────────────────────────
     sexes = _vals('sexe')
-    if len(sexes) >= 1:
+    if sexes:
         st.markdown('**Sexe**')
         sel_sexe = st.multiselect('Sexe', sexes, default=[], key='f_sexe',
                                   label_visibility='collapsed')
         if sel_sexe:
-            df_filt = df_filt[df_filt['sexe'].isin(sel_sexe) | df_filt['sexe'].isin(['', 'nan'])]
+            # Filtre strict : uniquement les athlètes avec la valeur sélectionnée
+            df_filt = df_filt[df_filt['sexe'].isin(sel_sexe)]
 
     # ── Discipline ────────────────────────────────────────────────────────────
     disciplines = _vals('discipline')
-    if len(disciplines) >= 1:
+    if disciplines:
         st.markdown('**Discipline**')
         sel_disc = st.multiselect('Discipline', disciplines, default=[],
                                   key='f_disc', label_visibility='collapsed')
         if sel_disc:
-            df_filt = df_filt[df_filt['discipline'].isin(sel_disc) | df_filt['discipline'].isin(['', 'nan'])]
+            df_filt = df_filt[df_filt['discipline'].isin(sel_disc)]
+
+    # ── Type de course ────────────────────────────────────────────────────────
+    types = _vals('type_course')
+    if types:
+        st.markdown('**Type de course**')
+        sel_type = st.multiselect('Type', types, default=[], key='f_type',
+                                  label_visibility='collapsed')
+        if sel_type:
+            df_filt = df_filt[df_filt['type_course'].isin(sel_type)]
 
     # ── Épreuve ───────────────────────────────────────────────────────────────
-    st.markdown('**Épreuve**')
     _dist_raw = df_filt['distance'].replace('', float('nan')).replace('None', float('nan')).dropna()
-    all_dist_vals = sorted(_dist_raw.unique().tolist()) if not df_filt.empty else ['250m']
-    if not all_dist_vals:
-        st.caption('Aucune épreuve — renseignez la distance dans le registre')
-        distance = ''
-    else:
+    all_dist_vals = sorted(_dist_raw.unique().tolist()) if not df_filt.empty else []
+    if all_dist_vals:
+        st.markdown('**Épreuve**')
         freq = _dist_raw.value_counts()
         default_dist = freq.index[0] if not freq.empty else all_dist_vals[0]
         default_idx  = all_dist_vals.index(default_dist) if default_dist in all_dist_vals else 0
         distance = st.selectbox('Distance', all_dist_vals, index=default_idx,
                                 label_visibility='collapsed')
+        # Filtre strict sur la distance
+        df_filt = df_filt[df_filt['distance'] == distance]
+    else:
+        distance = ''
+        st.caption('Aucune épreuve détectée sur cette période.')
 
     # ── Athlètes ──────────────────────────────────────────────────────────────
     st.markdown('**Athlètes**')
-    # N'afficher que les athlètes qui ont un fichier pour la distance sélectionnée
-    df_with_dist = df_filt[
-        (df_filt['distance'] == distance) | (df_filt['distance'].isin(['', 'nan']))
-    ]
-    all_athletes = sorted(df_with_dist['athlete'].dropna().unique().tolist())
-    selected = st.multiselect('', all_athletes,
-                              default=[],
-                              key='sel_athletes',
-                              label_visibility='collapsed')
+    all_athletes = sorted(df_filt['athlete'].dropna().unique().tolist())
+    selected = st.multiselect('Athlètes', all_athletes, default=[],
+                              key='sel_athletes', label_visibility='collapsed')
 
     # ── Plus de filtres ───────────────────────────────────────────────────────
     with st.expander('➕ Plus de filtres'):
-        cats = _vals('categorie')
-        if cats:
-            st.markdown('**Catégorie**')
-            sel_cat = st.multiselect('Catégorie', cats, default=cats, key='f_cat',
-                                     label_visibility='collapsed')
-            if sel_cat:
-                df_filt = df_filt[df_filt['categorie'].isin(sel_cat) | df_filt['categorie'].isin(['', 'nan'])]
-
         bateaux = _vals('bateau')
         if bateaux:
             st.markdown('**Bateau**')
-            sel_bat = st.multiselect('Bateau', bateaux, default=bateaux, key='f_bat',
+            sel_bat = st.multiselect('Bateau', bateaux, default=[], key='f_bat',
                                      label_visibility='collapsed')
             if sel_bat:
-                df_filt = df_filt[df_filt['bateau'].isin(sel_bat) | df_filt['bateau'].isin(['', 'nan'])]
+                df_filt = df_filt[df_filt['bateau'].isin(sel_bat)]
 
-        types = _vals('type_course')
-        if types:
-            st.markdown('**Type de course**')
-            sel_type = st.multiselect('Type', types, default=types, key='f_type',
-                                      label_visibility='collapsed')
-            if sel_type:
-                df_filt = df_filt[df_filt['type_course'].isin(sel_type) | df_filt['type_course'].isin(['', 'nan'])]
+        cats = _vals('categorie')
+        if cats:
+            st.markdown('**Catégorie**')
+            sel_cat = st.multiselect('Catégorie', cats, default=[], key='f_cat',
+                                     label_visibility='collapsed')
+            if sel_cat:
+                df_filt = df_filt[df_filt['categorie'].isin(sel_cat)]
 
         lieux = _vals('lieu')
         if lieux:
             st.markdown('**Lieu**')
-            sel_lieu = st.multiselect('Lieu', lieux, default=lieux, key='f_lieu',
+            sel_lieu = st.multiselect('Lieu', lieux, default=[], key='f_lieu',
                                       label_visibility='collapsed')
             if sel_lieu:
-                df_filt = df_filt[df_filt['lieu'].isin(sel_lieu) | df_filt['lieu'].isin(['', 'nan'])]
+                df_filt = df_filt[df_filt['lieu'].isin(sel_lieu)]
 
     # ── Résolution des fichiers (session la plus récente par athlète) ──────────
     ATHLETES_FILES = {}
@@ -2529,52 +2314,19 @@ _selected_with_file = [n for n in selected if n in ATHLETES_FILES]
 
 raw_strokes, raw_signals = {}, {}
 _cache_hits = 0
-
-def _load_one(name):
-    fname = ATHLETES_FILES.get(name, '')
-    if not fname:
-        return name, [], {}
-    cp = _cache_path(fname, fc, md, mh)
-    from_cache = os.path.exists(cp)
-    s, sig = load_with_cache(fname, fc, md, mh)
-    return name, s, sig, from_cache
-
-# Vérifier combien sont en cache
-_n_cached = sum(
-    1 for n in _selected_with_file
-    if os.path.exists(_cache_path(ATHLETES_FILES.get(n,''), fc, md, mh))
-    and ATHLETES_FILES.get(n,'')
-)
-_n_to_dl = len(_selected_with_file) - _n_cached
-
-if _n_to_dl > 0:
-    spinner_msg = (
-        f'Téléchargement de {_n_to_dl} session(s) depuis Phyling…'
-        if _n_cached == 0
-        else f'{_n_cached} en cache · téléchargement de {_n_to_dl} session(s)…'
-    )
-else:
-    spinner_msg = 'Chargement depuis le cache…'
-
-with st.spinner(spinner_msg):
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {executor.submit(_load_one, n): n for n in _selected_with_file}
-        for future in as_completed(futures):
-            try:
-                result = future.result()
-                name, s, sig = result[0], result[1], result[2]
-                from_cache = result[3] if len(result) > 3 else False
-                raw_strokes[name] = s
-                raw_signals[name] = sig
-                if from_cache:
-                    _cache_hits += 1
-                if not s:
-                    st.warning('Données introuvables pour {} — vérifiez API Phyling'.format(name))
-            except Exception as e:
-                name = futures[future]
-                raw_strokes[name] = []
-                raw_signals[name] = {}
+with st.spinner('Chargement des données…'):
+    for name in _selected_with_file:
+        fname = ATHLETES_FILES.get(name, '')
+        if fname:
+            cp = _cache_path(fname, fc, md, mh)
+            if os.path.exists(cp):
+                _cache_hits += 1
+            s, sig = load_with_cache(fname, fc, md, mh)
+            raw_strokes[name]=s; raw_signals[name]=sig
+            if not s:
+                st.warning('Données introuvables pour {} — vérifiez API Phyling'.format(name))
+        else:
+            raw_strokes[name]=[]; raw_signals[name]={}
 
 # Remplacer selected par la liste effective
 selected = _selected_with_file
@@ -2639,7 +2391,6 @@ with t1:
         # Pour auc_neg : valeur toujours <= 0, meilleur = le plus proche de 0 = False
         KPI = [
             ('auc_pos',   'AUC+',        '{:.4f}', True),
-            ('auc_neg',   '|AUC-|',      '{:.4f}', False),
             ('sym_ratio', 'Sym ratio',   '{:.3f}', False),
             ('rfd',       'RFD',         '{:.2f}', True),
             ('duration',  'Durée coup',  '{:.3f}', False),
@@ -2741,44 +2492,18 @@ with t2:
             with col2:
                 st.pyplot(fig_profil_auc(strokes, ath, c))
 
-            # ── Ligne 2 : quarts de course ────────────────────────────────────
-            st.markdown('<div class="sh">Évolution par quart de course</div>',
+            # ── Ligne 2 : quarts (gauche) + heatmap (droite) ────────────────
+            st.markdown('<div class="sh">Évolution par quart de course · Heatmap</div>',
                         unsafe_allow_html=True)
-            with st.expander('ℹ️ Comment lire ce graphique ?'):
-                st.markdown(HELP_QUARTS)
-            st.pyplot(fig_quarts_individuel(strokes, ath))
-
-            # ── Ligne 3 : heatmap (gauche) + espace vide (droite) ────────────
-            st.markdown('<div class="sh">Heatmap des coups</div>',
-                        unsafe_allow_html=True)
-            with st.expander('ℹ️ Comment lire la heatmap ?'):
-                st.markdown(HELP_HEATMAP)
-
-            col_hm, col_empty = st.columns([1, 1])
+            col_q, col_hm = st.columns(2)
+            with col_q:
+                with st.expander('ℹ️ Comment lire ce graphique ?'):
+                    st.markdown(HELP_QUARTS)
+                st.pyplot(fig_quarts_individuel(strokes, ath))
             with col_hm:
+                with st.expander('ℹ️ Comment lire la heatmap ?'):
+                    st.markdown(HELP_HEATMAP)
                 st.pyplot(fig_heatmap(strokes, ath, c))
-            with col_empty:
-                # Encart récapitulatif des métriques avancées
-                st.markdown('**Récapitulatif métriques pour cet athlète**')
-                df_s = to_df(strokes)
-                def fmt_m(col, d=3):
-                    return f'{df_s[col].mean():.{d}f} ± {df_s[col].std():.{d}f}'
-                cv_auc = df_s['auc_pos'].std()/df_s['auc_pos'].mean()*100
-                recap = {
-                    'AUC+ (m/s)':          fmt_m('auc_pos', 4),
-                    '|AUC-| (m/s)':        fmt_m('auc_neg', 4),
-                    'Sym ratio':           fmt_m('sym_ratio', 3),
-                    'RFD (m/s³)':          fmt_m('rfd', 2),
-                    'Jerk RMS (m/s³)':     f'{df_s["jerk_rms"].mean():.1f} ± {df_s["jerk_rms"].std():.1f}',
-                    'Position pic (%)':    fmt_m('pos_pic_pct', 1),
-                    'FWHM (ms)':           f'{df_s["fwhm_s"].mean()*1000:.0f} ± {df_s["fwhm_s"].std()*1000:.0f}',
-                    'CV AUC+ (%)':         f'{cv_auc:.1f}%',
-                    'Durée coup (s)':      fmt_m('duration', 3),
-                    'Distance/coup (m)':   fmt_m('d_stroke', 2),
-                }
-                df_recap = pd.DataFrame.from_dict(recap, orient='index',
-                                                   columns=['Moyenne ± écart-type'])
-                st.dataframe(df_recap, use_container_width=True)
 
 
 # ══ ③ COMPARAISON ════════════════════════════════════════════════════════════
