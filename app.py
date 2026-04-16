@@ -127,7 +127,7 @@ def _parse_record_meta(rec):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_phyling_records(page_size=500, days_back=30):
+def fetch_phyling_records(page_size=100, days_back=30):
     """
     Récupère les records kayak FFCK depuis l'API Phyling.
     Cache mémoire 1h + persistance disque pour démarrage instantané.
@@ -152,15 +152,40 @@ def fetch_phyling_records(page_size=500, days_back=30):
     cutoff = (_dt.now() - _td(days=days_back)).strftime("%Y-%m-%d")
 
     while True:
-        r = _req.post(
-            f"{PHYLING_BASE_URL}/records/all",
-            headers=headers,
-            json={"pageId": page, "pageSize": page_size},
-            timeout=30,
-        )
+        try:
+            r = _req.post(
+                f"{PHYLING_BASE_URL}/records/all",
+                headers=headers,
+                json={
+                    "type": "associated",
+                    "pageId": page,
+                    "pageSize": page_size,
+                    "clientIds": [PHYLING_CLIENT_ID],
+                    "userIds": [],
+                    "deviceIds": [],
+                    "groupIds": [],
+                    "exerciseIds": [],
+                    "onlyFavorite": False,
+                },
+                timeout=60,
+            )
+        except Exception as e:
+            # Timeout ou erreur réseau → utiliser le cache disque si disponible
+            if os.path.exists(_RECORDS_CACHE):
+                try:
+                    with open(_RECORDS_CACHE, "rb") as f:
+                        cached = pickle.load(f)
+                    return cached["records"]
+                except Exception:
+                    pass
+            return all_records  # Retourner ce qu'on a déjà récupéré
+
         if r.status_code != 200:
             break
-        data = r.json()
+        try:
+            data = r.json()
+        except Exception:
+            break
         records = data.get("records", [])
         if not records:
             break
