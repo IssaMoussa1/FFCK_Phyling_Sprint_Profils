@@ -2192,24 +2192,95 @@ with st.sidebar:
             (df_filt['date'] <= date_to.strftime('%Y-%m-%d'))
         ]
 
-    # ── Athlètes ──────────────────────────────────────────────────────────────
+    # ── Athlètes → Session → Sélections ──────────────────────────────────────
     st.markdown('**Athlètes**')
     all_athletes = sorted(df_filt['athlete'].dropna().unique().tolist())
-    selected = st.multiselect('Athlètes', all_athletes, default=[],
-                              key='sel_athletes', label_visibility='collapsed')
-    distance = ''  # pas de filtre distance dans cette version simplifiée
+    sel_athletes = st.multiselect('Athlètes', all_athletes, default=[],
+                                  key='sel_athletes', label_visibility='collapsed')
+    distance = ''
 
-    # ── Résolution des fichiers (session la plus récente par athlète) ──────────
-    ATHLETES_FILES = {}
-    session_labels = {}
-    for ath in selected:
-        sessions = get_sessions_for_athlete(df_filt, ath, distance)
-        if not sessions and distance:
-            st.sidebar.caption('⚠️ {} — pas de session {}'.format(ath.split()[0], distance))
+    # Pour chaque athlète sélectionné : choisir une session puis les sélections
+    # ATHLETES_FILES : clé = label unique, valeur = fichier_key (rec_id:sel_id)
+    ATHLETES_FILES = {}   # label_unique → fichier_key
+    session_labels = {}   # label_unique → label court pour affichage
+
+    MAX_SELECTIONS = 8    # limite pour garder les graphiques lisibles
+
+    for ath in sel_athletes:
+        # Grouper les lignes par session (date + heure)
+        df_ath = df_filt[df_filt['athlete'] == ath].sort_values(['date','heure','sel'],
+                                                                  ascending=[False,False,True])
+        if df_ath.empty:
             continue
-        chosen = sessions[-1]
-        ATHLETES_FILES[ath] = chosen['fichier']
-        session_labels[ath] = chosen['label']
+
+        # Construire la liste des sessions uniques (date + heure)
+        sessions_uniq = []
+        seen = set()
+        for _, row in df_ath.iterrows():
+            sess_key = (row['date'], row['heure'])
+            if sess_key not in seen:
+                seen.add(sess_key)
+                n_sel = len(df_ath[(df_ath['date']==row['date']) &
+                                    (df_ath['heure']==row['heure'])])
+                try:
+                    from datetime import datetime as _ddt
+                    date_fr = _ddt.strptime(row['date'], '%Y-%m-%d').strftime('%d/%m')
+                except Exception:
+                    date_fr = row['date']
+                heure_short = row['heure'][:5] if row.get('heure') else ''
+                label_sess = f"{date_fr} · {heure_short}  ({n_sel} sél.)"
+                sessions_uniq.append({
+                    'key':   sess_key,
+                    'label': label_sess,
+                    'date':  row['date'],
+                    'heure': row['heure'],
+                })
+
+        if not sessions_uniq:
+            continue
+
+        # Sélecteur de session
+        st.markdown(f'<div style="font-size:0.78rem;font-weight:500;'
+                    f'color:#90CAF9;margin:6px 0 2px">{ath.split()[-1]}</div>',
+                    unsafe_allow_html=True)
+        sess_labels = [s['label'] for s in sessions_uniq]
+        sess_key_sel = 'sess_' + ath.replace(' ','_')
+        chosen_sess_label = st.selectbox('Session', sess_labels, index=0,
+                                          key=sess_key_sel,
+                                          label_visibility='collapsed')
+        chosen_sess = sessions_uniq[sess_labels.index(chosen_sess_label)]
+
+        # Sélections disponibles pour cette session
+        df_sess = df_ath[
+            (df_ath['date']  == chosen_sess['date']) &
+            (df_ath['heure'] == chosen_sess['heure'])
+        ].sort_values('sel')
+
+        # Construire les labels de sélection avec commentaire si dispo
+        sel_options = []
+        for _, row in df_sess.iterrows():
+            num  = row.get('sel', '1')
+            note = str(row.get('notes', '') or '').strip()
+            lbl  = f"Sél. {num}" + (f" — {note[:30]}" if note else "")
+            sel_options.append({'label': lbl, 'fichier': row['fichier']})
+
+        # Checkboxes pour choisir les sélections
+        for opt in sel_options:
+            cb_key = 'cb_' + opt['fichier'].replace(':','_')
+            checked = st.checkbox(opt['label'], value=False, key=cb_key)
+            if checked and len(ATHLETES_FILES) < MAX_SELECTIONS:
+                # Label unique pour les graphiques : NOM — dd/mm — Sél.N
+                try:
+                    date_fr2 = _ddt.strptime(chosen_sess['date'],'%Y-%m-%d').strftime('%d/%m')
+                except Exception:
+                    date_fr2 = chosen_sess['date']
+                num = opt['label'].split('—')[0].strip().replace('Sél. ','S')
+                unique_label = f"{ath.split()[-1]} {date_fr2} {num}"
+                ATHLETES_FILES[unique_label] = opt['fichier']
+                session_labels[unique_label] = opt['label']
+
+    # Liste finale des labels actifs
+    selected = list(ATHLETES_FILES.keys())
     st.divider()
     _is_admin = st.session_state.get('username', '') == 'admin'
     if _is_admin:
@@ -2248,36 +2319,50 @@ s_lo    = 1
 s_hi    = 400
 
 if not selected:
-    st.warning('Sélectionnez au moins un athlète.')
+    st.warning('Sélectionnez au moins une sélection.')
     st.stop()
 
-# Seuls les athlètes avec une session disponible sont chargés
-_selected_with_file = [n for n in selected if n in ATHLETES_FILES]
+# Chargement parallèle des sélections
+def _load_one(label):
+    fname = ATHLETES_FILES.get(label, '')
+    if not fname:
+        return label, [], {}, False
+    cp = _cache_path(fname, fc, md, mh)
+    from_cache = os.path.exists(cp)
+    s, sig = load_with_cache(fname, fc, md, mh)
+    return label, s, sig, from_cache
 
 raw_strokes, raw_signals = {}, {}
 _cache_hits = 0
-with st.spinner('Chargement des données…'):
-    for name in _selected_with_file:
-        fname = ATHLETES_FILES.get(name, '')
-        if fname:
-            cp = _cache_path(fname, fc, md, mh)
-            if os.path.exists(cp):
-                _cache_hits += 1
-            s, sig = load_with_cache(fname, fc, md, mh)
-            raw_strokes[name]=s; raw_signals[name]=sig
-            if not s:
-                st.warning('Données introuvables pour {} — vérifiez API Phyling'.format(name))
-        else:
-            raw_strokes[name]=[]; raw_signals[name]={}
+_n_cached = sum(1 for lbl in selected
+                if os.path.exists(_cache_path(ATHLETES_FILES.get(lbl,''), fc, md, mh))
+                and ATHLETES_FILES.get(lbl,''))
+_n_to_dl  = len(selected) - _n_cached
+spinner_msg = (f'Téléchargement de {_n_to_dl} sélection(s) depuis Phyling…'
+               if _n_to_dl > 0 else 'Chargement depuis le cache…')
 
-# Remplacer selected par la liste effective
-selected = _selected_with_file
+with st.spinner(spinner_msg):
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(_load_one, lbl): lbl for lbl in selected}
+        for future in as_completed(futures):
+            try:
+                lbl, s, sig, from_cache = future.result()
+                raw_strokes[lbl] = s
+                raw_signals[lbl] = sig
+                if from_cache:
+                    _cache_hits += 1
+                if not s:
+                    st.warning(f'Données introuvables pour {lbl}')
+            except Exception:
+                lbl = futures[future]
+                raw_strokes[lbl] = []
+                raw_signals[lbl] = {}
 
-if len(selected) > 0:
-    if _cache_hits == len(selected):
-        st.sidebar.caption('⚡ Cache — chargement instantané')
-    elif _cache_hits > 0:
-        st.sidebar.caption('⚡ {}/{} depuis le cache'.format(_cache_hits, len(selected)))
+if _cache_hits == len(selected) and len(selected) > 0:
+    st.sidebar.caption('⚡ Cache — chargement instantané')
+elif _cache_hits > 0:
+    st.sidebar.caption(f'⚡ {_cache_hits}/{len(selected)} depuis le cache')
 
 filt_strokes = {n: apply_filters(raw_strokes[n], d_range, s_lo, s_hi) for n in selected}
 valid_names  = [n for n in selected if filt_strokes.get(n)]
@@ -2286,8 +2371,7 @@ valid_names  = [n for n in selected if filt_strokes.get(n)]
 # ── HEADER ───────────────────────────────────────────────────────────────────
 st.markdown('<div class="app-title">🛶 Analyse des coups de pagaie</div>',
             unsafe_allow_html=True)
-st.markdown(f'<div class="app-sub">Méthode : creux locaux · {distance} · '
-            f'{len(valid_names)} athlète(s) chargé(s)</div>', unsafe_allow_html=True)
+st.markdown(f'<div class="app-sub">Méthode : creux locaux · {len(valid_names)} sélection(s) chargée(s)</div>', unsafe_allow_html=True)
 
 
 # ── ONGLETS ───────────────────────────────────────────────────────────────────
@@ -2452,32 +2536,53 @@ with t2:
 # ══ ③ COMPARAISON ════════════════════════════════════════════════════════════
 with t3:
     if len(valid_names) < 2:
-        st.info('Sélectionnez ≥ 2 athlètes pour la comparaison.')
+        st.info('Sélectionnez ≥ 2 sélections pour la comparaison.')
     else:
+        # Toggle vue détaillée / synthétique
+        col_tog1, col_tog2 = st.columns([3,1])
+        with col_tog2:
+            vue_synth = st.toggle('Vue synthétique', value=False, key='vue_synth',
+                                   help='Activé : une courbe moyenne par athlète · '
+                                        'Désactivé : une courbe par sélection')
+
+        # En vue synthétique : regrouper les sélections par préfixe athlète
+        if vue_synth:
+            # Extraire le nom de base (avant la date) de chaque label
+            from collections import defaultdict as _dd
+            groups = _dd(list)
+            for lbl in valid_names:
+                base = lbl.split(' ')[0]  # ex "MARTIN" depuis "MARTIN 13/04 S1"
+                groups[base].append(lbl)
+            # Créer des strokes agrégés par athlète
+            synth_strokes = {}
+            for base, lbls in groups.items():
+                merged = []
+                for lbl in lbls:
+                    merged.extend(filt_strokes.get(lbl, []))
+                if merged:
+                    synth_strokes[base] = merged
+            display_strokes = synth_strokes
+            display_names   = list(synth_strokes.keys())
+        else:
+            display_strokes = filt_strokes
+            display_names   = valid_names
+
         # 1. Profils moyens superposés
         st.markdown('<div class="sh">1 · Profils moyens superposés</div>',
                     unsafe_allow_html=True)
-        st.pyplot(fig_enveloppe_superposee(filt_strokes, valid_names))
+        st.pyplot(fig_enveloppe_superposee(display_strokes, display_names))
 
         # 2. Évolution par quart (comparaison)
-        st.markdown('<div class="sh">2 · Profils par quart de course — comparaison</div>',
+        st.markdown('<div class="sh">2 · Profils par quart de course</div>',
                     unsafe_allow_html=True)
-        st.pyplot(fig_quarts_multi(filt_strokes, valid_names))
+        st.pyplot(fig_quarts_multi(display_strokes, display_names))
 
-        # Sections 3 à 7 — masquées (à activer progressivement)
-
-        # Dendrogramme
-        st.markdown('<div class="sh">3 · Similarité entre athlètes — clustering hiérarchique</div>',
+        # 3. Dendrogramme
+        st.markdown('<div class="sh">3 · Similarité — clustering hiérarchique</div>',
                     unsafe_allow_html=True)
-        st.markdown(
-            '<div class="note">Les dendrogrammes regroupent les athlètes selon '
-            '<b>la forme du coup</b> (profil normalisé) et selon '
-            '<b>les métriques scalaires</b> (AUC+, RFD, Jerk…). '
-            'Plus deux athlètes sont proches, plus leur technique est similaire.</div>',
-            unsafe_allow_html=True)
-        if len(valid_names) >= 2:
-            st.pyplot(fig_dendrogrammes(filt_strokes, valid_names))
+        if len(display_names) >= 2:
+            st.pyplot(fig_dendrogrammes(display_strokes, display_names))
         else:
-            st.info('Sélectionnez au moins 2 athlètes pour afficher le dendrogramme.')
+            st.info('Sélectionnez au moins 2 entrées pour afficher le dendrogramme.')
 
 # Onglets ④ ⑤ ⑥ masqués — décommenter pour activer
