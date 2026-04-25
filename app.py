@@ -716,15 +716,17 @@ def _cache_path(fname, fc, min_d, min_h):
     return os.path.join(CACHE_DIR, f"{os.path.splitext(fname)[0]}_{h}.pkl")
 
 
-def load_with_cache(fname, fc, min_d, min_h):
+def load_with_cache(fname, fc, min_d, min_h, flip=False):
     """
     Charge et détecte les coups pour fname.
-    - Si un cache valide existe (plus récent que le CSV), le relit.
+    - Si un cache valide existe, le relit.
     - Sinon, appelle load_and_detect et sauvegarde le résultat.
+    flip=True : corrige un capteur placé à l'envers (cache distinct).
     Retourne (strokes, raw_signals).
     """
     import pickle
-    cache_path = _cache_path(fname, fc, min_d, min_h)
+    flip_suffix = '_flip' if flip else ''
+    cache_path = _cache_path(fname + flip_suffix, fc, min_d, min_h)
 
     # Cache valide = fichier pkl existe déjà
     if os.path.exists(cache_path):
@@ -736,7 +738,7 @@ def load_with_cache(fname, fc, min_d, min_h):
             pass  # Cache corrompu → on recalcule
 
     # Calcul complet
-    strokes, raw = load_and_detect(fname, fc, min_d, min_h)
+    strokes, raw = load_and_detect(fname, fc, min_d, min_h, flip=flip)
 
     # Sauvegarde dans le cache
     try:
@@ -865,7 +867,8 @@ def ath_color(name, name_list):
 
 
 @st.cache_data(show_spinner=False)
-def load_and_detect(fname, fc=FC_SMOOTH, min_d=MIN_DIST_S, min_h=MIN_PEAK_H):
+def load_and_detect(fname, fc=FC_SMOOTH, min_d=MIN_DIST_S, min_h=MIN_PEAK_H,
+                    flip=False):
     # fname est au format "rec_id:sel_id" ou un chemin local (rétrocompatibilité)
     if ':' in str(fname):
         rec_id, sel_id = str(fname).split(':', 1)
@@ -878,6 +881,19 @@ def load_and_detect(fname, fc=FC_SMOOTH, min_d=MIN_DIST_S, min_h=MIN_PEAK_H):
             return [], {}
         df = pd.read_csv(local_path)
     df = df.sort_values('T').copy()
+
+    # ── Correction capteur inversé (rotation 180° autour de l'axe z) ─────────
+    if flip:
+        for col in ['acc_x', 'acc_y', 'gyro_x', 'gyro_y', 'roll', 'pitch']:
+            if col in df.columns:
+                df[col] = -df[col]
+        # Swapper les colonnes propulsion/freinage déjà calculées par Phyling
+        for c1, c2 in [('pic_acc','pic_down'), ('t_acc','t_down')]:
+            if c1 in df.columns and c2 in df.columns:
+                df[c1], df[c2] = df[c2].copy(), df[c1].copy()
+        # speed_i est une fusion acc_x + speed_gps : recalcul simplifié depuis speed_gps
+        if 'speed_gps' in df.columns and 'speed_i' in df.columns:
+            df['speed_i'] = df['speed_gps']
     acc = df['acc_x'].values; t = df['T'].values; D = df['D'].values
     spd = df['speed'].values if 'speed' in df.columns else np.full(len(t), np.nan)
     b, a = butter(2, fc / (FS / 2), btype='low')
@@ -2267,16 +2283,21 @@ with st.sidebar:
         # Checkboxes pour choisir les sélections
         for opt in sel_options:
             cb_key = 'cb_' + opt['fichier'].replace(':','_')
-            checked = st.checkbox(opt['label'], value=False, key=cb_key)
+            col_cb, col_flip = st.columns([5, 1])
+            with col_cb:
+                checked = st.checkbox(opt['label'], value=False, key=cb_key)
+            with col_flip:
+                flip_key = 'flip_' + opt['fichier'].replace(':','_')
+                is_flip = st.checkbox('↩', value=False, key=flip_key,
+                                      help='Capteur place a l envers - corrige acc_x')
             if checked and len(ATHLETES_FILES) < MAX_SELECTIONS:
-                # Label unique pour les graphiques : NOM — dd/mm — Sél.N
                 try:
                     date_fr2 = _ddt.strptime(chosen_sess['date'],'%Y-%m-%d').strftime('%d/%m')
                 except Exception:
                     date_fr2 = chosen_sess['date']
                 num = opt['label'].split('—')[0].strip().replace('Sél. ','S')
                 unique_label = f"{ath.split()[-1]} {date_fr2} {num}"
-                ATHLETES_FILES[unique_label] = opt['fichier']
+                ATHLETES_FILES[unique_label] = (opt['fichier'], is_flip)
                 session_labels[unique_label] = opt['label']
 
     # Liste finale des labels actifs
@@ -2324,19 +2345,30 @@ if not selected:
 
 # Chargement parallèle des sélections
 def _load_one(label):
-    fname = ATHLETES_FILES.get(label, '')
-    if not fname:
+    entry = ATHLETES_FILES.get(label, '')
+    if not entry:
         return label, [], {}, False
-    cp = _cache_path(fname, fc, md, mh)
+    # entry peut être un tuple (fname, flip) ou juste fname
+    if isinstance(entry, tuple):
+        fname, flip = entry
+    else:
+        fname, flip = entry, False
+    flip_suffix = '_flip' if flip else ''
+    cp = _cache_path(fname + flip_suffix, fc, md, mh)
     from_cache = os.path.exists(cp)
-    s, sig = load_with_cache(fname, fc, md, mh)
+    s, sig = load_with_cache(fname, fc, md, mh, flip=flip)
     return label, s, sig, from_cache
 
 raw_strokes, raw_signals = {}, {}
 _cache_hits = 0
+def _get_fname_flip(lbl):
+    entry = ATHLETES_FILES.get(lbl, '')
+    if isinstance(entry, tuple): return entry
+    return entry, False
 _n_cached = sum(1 for lbl in selected
-                if os.path.exists(_cache_path(ATHLETES_FILES.get(lbl,''), fc, md, mh))
-                and ATHLETES_FILES.get(lbl,''))
+                if (lambda f,fl: f and os.path.exists(
+                    _cache_path(f + ('_flip' if fl else ''), fc, md, mh)))
+                (*_get_fname_flip(lbl)))
 _n_to_dl  = len(selected) - _n_cached
 spinner_msg = (f'Téléchargement de {_n_to_dl} sélection(s) depuis Phyling…'
                if _n_to_dl > 0 else 'Chargement depuis le cache…')
