@@ -51,12 +51,17 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 
 def _has_phyling_api_key():
     """Return True when the Phyling API can be queried."""
-    return bool(st.secrets.get("PHYLING_API_KEY", ""))
+    return bool(_get_phyling_api_key())
+
+
+def _get_phyling_api_key():
+    """Read the Phyling API key from Streamlit secrets or environment."""
+    return st.secrets.get("PHYLING_API_KEY", "") or os.environ.get("PHYLING_API_KEY", "")
 
 
 def _phyling_headers():
     """Retourne les headers d'authentification Phyling."""
-    api_key = st.secrets.get("PHYLING_API_KEY", "")
+    api_key = _get_phyling_api_key()
     if not api_key:
         return None
     return {
@@ -75,9 +80,33 @@ def fetch_phyling_records(page_size=500, days_back=None):
     import requests as _req, json as _json, pickle
     from datetime import datetime as _dt, timedelta as _td
 
+    records, status = _fetch_phyling_records_with_status(page_size=page_size, days_back=days_back)
+    return records
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_phyling_records_with_status(page_size=500, days_back=None):
+    """
+    Récupère les records Phyling et retourne (records, status).
+    status contient les infos nécessaires au diagnostic UI.
+    """
+    import requests as _req, json as _json
+    from datetime import datetime as _dt, timedelta as _td
+
+    status = {
+        "enabled": _has_phyling_api_key(),
+        "ok": False,
+        "pages": 0,
+        "total_api": None,
+        "raw_records": 0,
+        "kayak_selections": 0,
+        "message": "",
+    }
+
     headers = _phyling_headers()
     if not headers:
-        return []
+        status["message"] = "PHYLING_API_KEY absente"
+        return [], status
     all_records = []
     page = 1
     cutoff = ((_dt.now() - _td(days=days_back)).strftime("%Y-%m-%d")
@@ -99,16 +128,22 @@ def fetch_phyling_records(page_size=500, days_back=None):
                     "exerciseIds": [],
                     "onlyFavorite": False,
                 },
-                timeout=12,
+                timeout=30,
             )
-        except Exception:
+        except Exception as exc:
+            status["message"] = f"Erreur API: {exc.__class__.__name__}"
             break
 
         if r.status_code != 200:
+            status["message"] = f"Erreur API HTTP {r.status_code}"
             break
         data = r.json()
         records = data.get("records", [])
+        status["pages"] = page
+        status["total_api"] = data.get("total", status["total_api"])
+        status["raw_records"] += len(records)
         if not records:
+            status["message"] = "API OK, aucun record retourné"
             break
 
         stop_pagination = False
@@ -193,13 +228,20 @@ def fetch_phyling_records(page_size=500, days_back=None):
                     "sel_id":      sel_id,
                     "group_name":  group,
                 })
+                status["kayak_selections"] += 1
 
         total = data.get("total", 0)
         if stop_pagination or page * page_size >= total:
             break
         page += 1
 
-    return all_records
+    if all_records:
+        status["ok"] = True
+        status["message"] = f"{len(all_records)} sélection(s) kayak depuis Phyling"
+    elif not status["message"]:
+        status["message"] = "API OK, aucune sélection kayak après filtrage"
+
+    return all_records, status
 
 
 @st.cache_data(show_spinner=False)
@@ -332,7 +374,7 @@ def scan_data_dir():
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_registre(use_api=False):
+def load_registre(use_api=False, return_status=False):
     """
     Charge le registre local, puis complète avec l'API Phyling si disponible.
     Le mode local reste fonctionnel sans PHYLING_API_KEY.
@@ -340,6 +382,15 @@ def load_registre(use_api=False):
     cols_base = ['fichier', 'athlete', 'distance', 'date', 'heure', 'sel', 'notes']
     cols_meta = ['discipline', 'sexe', 'categorie', 'bateau', 'type_course', 'lieu']
     cols_all  = cols_base + cols_meta
+    api_status = {
+        "enabled": _has_phyling_api_key(),
+        "ok": False,
+        "pages": 0,
+        "total_api": None,
+        "raw_records": 0,
+        "kayak_selections": 0,
+        "message": "API non interrogée",
+    }
 
     df_local = pd.DataFrame(columns=cols_all)
     if os.path.exists(REGISTRE):
@@ -384,7 +435,12 @@ def load_registre(use_api=False):
     should_fetch_api = use_api and _has_phyling_api_key()
 
     # Charger les records depuis l'API Phyling uniquement si nécessaire
-    api_records = fetch_phyling_records(page_size=500, days_back=None) if should_fetch_api else []
+    if should_fetch_api:
+        api_records, api_status = _fetch_phyling_records_with_status(page_size=500, days_back=None)
+    else:
+        api_records = []
+        if use_api:
+            api_status["message"] = "PHYLING_API_KEY absente"
     df_api = pd.DataFrame(api_records) if api_records else pd.DataFrame(columns=cols_all)
 
     # Charger un registre local optionnel pour les métadonnées manuelles de l'API
@@ -440,6 +496,11 @@ def load_registre(use_api=False):
                 local_rows[cols_all].to_csv(REGISTRE, index=False, encoding='utf-8')
     except Exception:
         pass
+
+    if return_status:
+        api_status["local_rows"] = len(df_local)
+        api_status["final_rows"] = len(df_reg)
+        return df_reg, api_status
 
     return df_reg
 
@@ -2231,10 +2292,23 @@ with st.sidebar:
     use_api = has_phyling_api
     data_source = 'API Phyling' if use_api else 'dossier data/'
     with st.spinner(f'Chargement des sessions ({data_source})...'):
-        df_registre = load_registre(use_api=use_api)
+        df_registre, api_status = load_registre(use_api=use_api, return_status=True)
     n_sessions  = len(df_registre)
     n_athletes  = df_registre['athlete'].nunique() if not df_registre.empty else 0
     st.caption(f'{n_sessions} session(s) · {n_athletes} athlète(s) · {data_source}')
+    if use_api:
+        if api_status.get("ok"):
+            st.caption(
+                f"Phyling OK · {api_status.get('kayak_selections', 0)} sélection(s) kayak · "
+                f"{api_status.get('pages', 0)} page(s)"
+            )
+        else:
+            st.warning(
+                f"Phyling non chargé : {api_status.get('message', 'erreur inconnue')} · "
+                f"fallback local {api_status.get('local_rows', 0)} session(s)"
+            )
+    else:
+        st.info("Mode local : ajoutez PHYLING_API_KEY dans les secrets Streamlit pour charger tout l'historique Phyling.")
 
     df_filt = df_registre.copy()
 
