@@ -41,17 +41,24 @@ PHYLING_BASE_URL = "https://api.app.phyling.fr"
 PHYLING_CLIENT_ID = 3  # FFCK
 
 # Répertoire cache local pour éviter de re-télécharger les données
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR   = os.path.join(SCRIPT_DIR, "data")
+REGISTRE   = os.path.join(DATA_DIR, "registre.csv")
 _CACHE_ROOT = os.path.join(os.path.expanduser("~"), ".phyling_cache")
 CACHE_DIR   = os.path.join(_CACHE_ROOT, "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
+
+
+def _has_phyling_api_key():
+    """Return True when the Phyling API can be queried."""
+    return bool(st.secrets.get("PHYLING_API_KEY", ""))
 
 
 def _phyling_headers():
     """Retourne les headers d'authentification Phyling."""
     api_key = st.secrets.get("PHYLING_API_KEY", "")
     if not api_key:
-        st.error("Clé API Phyling manquante — ajoutez PHYLING_API_KEY dans les secrets Streamlit.")
-        st.stop()
+        return None
     return {
         "Authorization": f"ApiKey {api_key}",
         "Content-Type": "application/json",
@@ -69,6 +76,8 @@ def fetch_phyling_records(page_size=100, days_back=30):
     from datetime import datetime as _dt, timedelta as _td
 
     headers = _phyling_headers()
+    if not headers:
+        return []
     all_records = []
     page = 1
     cutoff = (_dt.now() - _td(days=days_back)).strftime("%Y-%m-%d")
@@ -89,7 +98,7 @@ def fetch_phyling_records(page_size=100, days_back=30):
                     "exerciseIds": [],
                     "onlyFavorite": False,
                 },
-                timeout=60,
+                timeout=12,
             )
         except Exception:
             break
@@ -212,6 +221,8 @@ def fetch_csv_from_api(rec_id, sel_id):
 
     # Télécharger depuis l'API
     headers = _phyling_headers()
+    if not headers:
+        return pd.DataFrame()
     r = _req.post(
         f"{PHYLING_BASE_URL}/records/{rec_id}/file/decoded",
         headers=headers,
@@ -319,21 +330,65 @@ def scan_data_dir():
     return rows
 
 
-def load_registre():
+@st.cache_data(ttl=300, show_spinner=False)
+def load_registre(use_api=False):
     """
-    Charge le registre depuis l'API Phyling.
-    Fusionne avec un éventuel registre.csv local pour les métadonnées
-    ajoutées manuellement (sexe, lieu, etc.).
+    Charge le registre local, puis complète avec l'API Phyling si disponible.
+    Le mode local reste fonctionnel sans PHYLING_API_KEY.
     """
     cols_base = ['fichier', 'athlete', 'distance', 'date', 'heure', 'sel', 'notes']
     cols_meta = ['discipline', 'sexe', 'categorie', 'bateau', 'type_course', 'lieu']
     cols_all  = cols_base + cols_meta
 
-    # Charger les records depuis l'API Phyling
-    api_records = fetch_phyling_records()
+    df_local = pd.DataFrame(columns=cols_all)
+    if os.path.exists(REGISTRE):
+        try:
+            for enc in ('utf-8-sig', 'utf-8', 'latin-1'):
+                try:
+                    df_local = pd.read_csv(REGISTRE, dtype=str, encoding=enc,
+                                           sep=None, engine='python').fillna('')
+                    df_local.columns = [c.lstrip('\ufeff').strip() for c in df_local.columns]
+                    break
+                except UnicodeDecodeError:
+                    continue
+        except Exception:
+            df_local = pd.DataFrame(columns=cols_all)
+
+    for c in cols_all:
+        if c not in df_local.columns:
+            df_local[c] = ''
+    if not df_local.empty and 'fichier' in df_local.columns:
+        df_local = df_local[df_local['fichier'].apply(
+            lambda f: bool(f) and (':' in str(f) or os.path.exists(os.path.join(DATA_DIR, str(f))))
+        )].copy()
+
+    scanned = pd.DataFrame(scan_data_dir())
+    if not scanned.empty:
+        for c in cols_all:
+            if c not in scanned.columns:
+                scanned[c] = ''
+        existing = set(df_local['fichier'].values) if not df_local.empty else set()
+        new_files = scanned[~scanned['fichier'].isin(existing)]
+        if not new_files.empty:
+            df_local = pd.concat([df_local, new_files[cols_all]], ignore_index=True)
+
+    needs_zip_enrichment = (
+        df_local.empty
+        or any(c not in df_local.columns for c in cols_meta)
+        or df_local[cols_meta].replace('', np.nan).isna().all(axis=None)
+    )
+    if not df_local.empty and needs_zip_enrichment:
+        df_local = enrich_registre_from_zips(df_local)
+
+    should_fetch_api = use_api and _has_phyling_api_key()
+    if df_local.empty and _has_phyling_api_key():
+        should_fetch_api = True
+
+    # Charger les records depuis l'API Phyling uniquement si nécessaire
+    api_records = fetch_phyling_records(page_size=500) if should_fetch_api else []
     df_api = pd.DataFrame(api_records) if api_records else pd.DataFrame(columns=cols_all)
 
-    # Charger un registre local optionnel pour les métadonnées manuelles
+    # Charger un registre local optionnel pour les métadonnées manuelles de l'API
     reg_local = os.path.join(_CACHE_ROOT, 'registre_meta.csv')
     if os.path.exists(reg_local):
         try:
@@ -363,7 +418,12 @@ def load_registre():
                     df_api.loc[mask, col] = df_api.loc[mask, col + '_meta']
                     df_api.drop(columns=[col + '_meta'], inplace=True, errors='ignore')
 
-    df_reg = df_api.copy()
+    if df_api.empty:
+        df_reg = df_local.copy()
+    elif df_local.empty:
+        df_reg = df_api.copy()
+    else:
+        df_reg = pd.concat([df_api, df_local], ignore_index=True)
 
     # Assurer que toutes les colonnes existent
     for c in cols_all:
@@ -373,6 +433,14 @@ def load_registre():
     # Dédoublonner
     if not df_reg.empty:
         df_reg = df_reg.drop_duplicates(subset=['fichier'], keep='first').reset_index(drop=True)
+
+    try:
+        if not df_reg.empty and os.path.isdir(DATA_DIR):
+            local_rows = df_reg[~df_reg['fichier'].astype(str).str.contains(':', regex=False)]
+            if not local_rows.empty:
+                local_rows[cols_all].to_csv(REGISTRE, index=False, encoding='utf-8')
+    except Exception:
+        pass
 
     return df_reg
 
@@ -876,7 +944,7 @@ def load_and_detect(fname, fc=FC_SMOOTH, min_d=MIN_DIST_S, min_h=MIN_PEAK_H,
         if df.empty:
             return [], {}
     else:
-        local_path = os.path.join(_CACHE_ROOT, fname)
+        local_path = os.path.join(DATA_DIR, fname)
         if not os.path.exists(local_path):
             return [], {}
         df = pd.read_csv(local_path)
@@ -2148,18 +2216,27 @@ with st.sidebar:
     st.caption('Analyse des coups de pagaie · Maxi-Phyling')
     st.divider()
 
+    has_phyling_api = _has_phyling_api_key()
+
     # Bouton de rafraîchissement
-    if st.button('🔄 Actualiser depuis Phyling', use_container_width=True,
-                 help="Recharge la liste des sessions depuis l'API Phyling"):
+    refresh_label = '🔄 Actualiser depuis Phyling' if has_phyling_api else '🔄 Recharger les données locales'
+    refresh_help = (
+        "Recharge la liste des sessions depuis l'API Phyling"
+        if has_phyling_api else
+        "Recharge le registre et les CSV présents dans data/"
+    )
+    if st.button(refresh_label, use_container_width=True, help=refresh_help):
         st.cache_data.clear()
+        st.session_state['force_phyling_refresh'] = has_phyling_api
         st.rerun()
 
-    # Chargement depuis l'API Phyling
-    with st.spinner('Chargement des sessions Phyling...'):
-        df_registre = load_registre()
+    force_phyling_refresh = bool(st.session_state.pop('force_phyling_refresh', False))
+    data_source = 'API Phyling' if force_phyling_refresh else 'dossier data/'
+    with st.spinner(f'Chargement des sessions ({data_source})...'):
+        df_registre = load_registre(use_api=force_phyling_refresh)
     n_sessions  = len(df_registre)
     n_athletes  = df_registre['athlete'].nunique() if not df_registre.empty else 0
-    st.caption(f'{n_sessions} session(s) · {n_athletes} athlète(s) · API Phyling')
+    st.caption(f'{n_sessions} session(s) · {n_athletes} athlète(s) · {data_source}')
 
     df_filt = df_registre.copy()
 
