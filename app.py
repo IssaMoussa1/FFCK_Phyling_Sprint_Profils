@@ -100,6 +100,9 @@ def _fetch_phyling_records_with_status(page_size=500, days_back=None):
         "total_api": None,
         "raw_records": 0,
         "kayak_selections": 0,
+        "records_with_selections": 0,
+        "sports_seen": [],
+        "groups_seen": [],
         "message": "",
     }
 
@@ -148,11 +151,17 @@ def _fetch_phyling_records_with_status(page_size=500, days_back=None):
 
         stop_pagination = False
         for rec in records:
-            if rec.get("sport_name") != "kayak":
-                continue
+            sport_name = str(rec.get("sport_name", "") or "")
+            group_name = str(rec.get("group_name", "") or "")
+            if sport_name and sport_name not in status["sports_seen"]:
+                status["sports_seen"].append(sport_name)
+            if group_name and group_name not in status["groups_seen"]:
+                status["groups_seen"].append(group_name)
+
             sels = rec.get("selections", [])
             if not sels:
                 continue
+            status["records_with_selections"] += 1
 
             # Parser la date
             try:
@@ -182,7 +191,7 @@ def _fetch_phyling_records_with_status(page_size=500, days_back=None):
                 pass
             bateau = other.get("boat", "").upper()
 
-            group = rec.get("group_name", "")
+            group = group_name
             _GMAP = {
                 "Kayak_D": ("Kayak","F"), "Kayak_H": ("Kayak","H"),
                 "Canoe_D": ("Canoë","F"), "Canoe_H": ("Canoë","H"),
@@ -237,9 +246,14 @@ def _fetch_phyling_records_with_status(page_size=500, days_back=None):
 
     if all_records:
         status["ok"] = True
-        status["message"] = f"{len(all_records)} sélection(s) kayak depuis Phyling"
+        status["message"] = f"{len(all_records)} sélection(s) depuis Phyling"
     elif not status["message"]:
-        status["message"] = "API OK, aucune sélection kayak après filtrage"
+        sports = ", ".join(status["sports_seen"][:4]) or "sport_name vide"
+        groups = ", ".join(status["groups_seen"][:4]) or "group_name vide"
+        status["message"] = (
+            "API OK, aucune sélection exploitable après filtrage "
+            f"(sports: {sports}; groupes: {groups})"
+        )
 
     return all_records, status
 
@@ -2299,7 +2313,7 @@ with st.sidebar:
     if use_api:
         if api_status.get("ok"):
             st.caption(
-                f"Phyling OK · {api_status.get('kayak_selections', 0)} sélection(s) kayak · "
+                f"Phyling OK · {api_status.get('kayak_selections', 0)} sélection(s) · "
                 f"{api_status.get('pages', 0)} page(s)"
             )
         else:
