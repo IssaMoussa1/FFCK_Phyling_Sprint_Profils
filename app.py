@@ -66,11 +66,11 @@ def _phyling_headers():
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_phyling_records(page_size=100, days_back=30):
+def fetch_phyling_records(page_size=500, days_back=None):
     """
     Récupère les records kayak FFCK depuis l'API Phyling.
     Filtre côté serveur via clientIds=[3] + type=associated.
-    Limite aux 30 derniers jours pour la performance.
+    days_back=None récupère tout l'historique disponible.
     """
     import requests as _req, json as _json, pickle
     from datetime import datetime as _dt, timedelta as _td
@@ -80,7 +80,8 @@ def fetch_phyling_records(page_size=100, days_back=30):
         return []
     all_records = []
     page = 1
-    cutoff = (_dt.now() - _td(days=days_back)).strftime("%Y-%m-%d")
+    cutoff = ((_dt.now() - _td(days=days_back)).strftime("%Y-%m-%d")
+              if days_back else None)
 
     while True:
         try:
@@ -127,7 +128,7 @@ def fetch_phyling_records(page_size=100, days_back=30):
                 heure_str = ""
 
             # Arrêter si on dépasse la fenêtre temporelle
-            if rec_date < cutoff:
+            if cutoff and rec_date < cutoff:
                 stop_pagination = True
                 continue
 
@@ -381,11 +382,9 @@ def load_registre(use_api=False):
         df_local = enrich_registre_from_zips(df_local)
 
     should_fetch_api = use_api and _has_phyling_api_key()
-    if df_local.empty and _has_phyling_api_key():
-        should_fetch_api = True
 
     # Charger les records depuis l'API Phyling uniquement si nécessaire
-    api_records = fetch_phyling_records(page_size=500) if should_fetch_api else []
+    api_records = fetch_phyling_records(page_size=500, days_back=None) if should_fetch_api else []
     df_api = pd.DataFrame(api_records) if api_records else pd.DataFrame(columns=cols_all)
 
     # Charger un registre local optionnel pour les métadonnées manuelles de l'API
@@ -2227,13 +2226,12 @@ with st.sidebar:
     )
     if st.button(refresh_label, use_container_width=True, help=refresh_help):
         st.cache_data.clear()
-        st.session_state['force_phyling_refresh'] = has_phyling_api
         st.rerun()
 
-    force_phyling_refresh = bool(st.session_state.pop('force_phyling_refresh', False))
-    data_source = 'API Phyling' if force_phyling_refresh else 'dossier data/'
+    use_api = has_phyling_api
+    data_source = 'API Phyling' if use_api else 'dossier data/'
     with st.spinner(f'Chargement des sessions ({data_source})...'):
-        df_registre = load_registre(use_api=force_phyling_refresh)
+        df_registre = load_registre(use_api=use_api)
     n_sessions  = len(df_registre)
     n_athletes  = df_registre['athlete'].nunique() if not df_registre.empty else 0
     st.caption(f'{n_sessions} session(s) · {n_athletes} athlète(s) · {data_source}')
