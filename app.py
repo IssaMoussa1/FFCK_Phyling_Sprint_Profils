@@ -47,6 +47,8 @@ REGISTRE   = os.path.join(DATA_DIR, "registre.csv")
 _CACHE_ROOT = os.path.join(os.path.expanduser("~"), ".phyling_cache")
 CACHE_DIR   = os.path.join(_CACHE_ROOT, "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
+API_RECORDS_CACHE = os.path.join(_CACHE_ROOT, "phyling_records.pkl")
+API_RECORDS_CACHE_TTL_S = 6 * 3600
 
 
 def _has_phyling_api_key():
@@ -68,6 +70,52 @@ def _phyling_headers():
         "Authorization": f"ApiKey {api_key}",
         "Content-Type": "application/json",
     }
+
+
+def clear_phyling_disk_cache():
+    """Clear persisted Phyling metadata cache."""
+    try:
+        if os.path.exists(API_RECORDS_CACHE):
+            os.remove(API_RECORDS_CACHE)
+    except Exception:
+        pass
+
+
+def _read_phyling_disk_cache():
+    """Read persisted Phyling metadata when it is still fresh."""
+    try:
+        import pickle, time
+        if not os.path.exists(API_RECORDS_CACHE):
+            return None
+        if time.time() - os.path.getmtime(API_RECORDS_CACHE) > API_RECORDS_CACHE_TTL_S:
+            return None
+        with open(API_RECORDS_CACHE, "rb") as f:
+            payload = pickle.load(f)
+        if payload.get("client_id") != PHYLING_CLIENT_ID:
+            return None
+        records = payload.get("records", [])
+        status = payload.get("status", {})
+        status = dict(status)
+        status["message"] = status.get("message", "Cache Phyling")
+        status["from_disk_cache"] = True
+        return records, status
+    except Exception:
+        return None
+
+
+def _write_phyling_disk_cache(records, status):
+    """Persist Phyling metadata for faster cold starts."""
+    try:
+        import pickle
+        payload = {
+            "client_id": PHYLING_CLIENT_ID,
+            "records": records,
+            "status": status,
+        }
+        with open(API_RECORDS_CACHE, "wb") as f:
+            pickle.dump(payload, f)
+    except Exception:
+        pass
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -106,6 +154,11 @@ def _fetch_phyling_records_with_status(page_size=500, days_back=None):
         "groups_seen": [],
         "message": "",
     }
+
+    if days_back is None:
+        cached = _read_phyling_disk_cache()
+        if cached is not None:
+            return cached
 
     headers = _phyling_headers()
     if not headers:
@@ -250,6 +303,8 @@ def _fetch_phyling_records_with_status(page_size=500, days_back=None):
     if all_records:
         status["ok"] = True
         status["message"] = f"{len(all_records)} sélection(s) depuis Phyling"
+        if days_back is None:
+            _write_phyling_disk_cache(all_records, status)
     elif not status["message"]:
         sports = ", ".join(status["sports_seen"][:4]) or "sport_name vide"
         groups = ", ".join(status["groups_seen"][:4]) or "group_name vide"
@@ -440,8 +495,26 @@ def load_registre(use_api=False, return_status=False):
         "total_api": None,
         "raw_records": 0,
         "kayak_selections": 0,
+        "records_with_selections": 0,
+        "full_record_fallbacks": 0,
         "message": "API non interrogée",
     }
+
+    should_fetch_api = use_api and _has_phyling_api_key()
+    if should_fetch_api:
+        api_records, api_status = _fetch_phyling_records_with_status(page_size=500, days_back=None)
+        if api_records:
+            df_reg = pd.DataFrame(api_records)
+            for c in cols_all:
+                if c not in df_reg.columns:
+                    df_reg[c] = ''
+            if not df_reg.empty:
+                df_reg = df_reg.drop_duplicates(subset=['fichier'], keep='first').reset_index(drop=True)
+            if return_status:
+                api_status["local_rows"] = 0
+                api_status["final_rows"] = len(df_reg)
+                return df_reg, api_status
+            return df_reg
 
     df_local = pd.DataFrame(columns=cols_all)
     if os.path.exists(REGISTRE):
@@ -483,15 +556,9 @@ def load_registre(use_api=False, return_status=False):
     if not df_local.empty and needs_zip_enrichment:
         df_local = enrich_registre_from_zips(df_local)
 
-    should_fetch_api = use_api and _has_phyling_api_key()
-
-    # Charger les records depuis l'API Phyling uniquement si nécessaire
-    if should_fetch_api:
-        api_records, api_status = _fetch_phyling_records_with_status(page_size=500, days_back=None)
-    else:
-        api_records = []
-        if use_api:
-            api_status["message"] = "PHYLING_API_KEY absente"
+    api_records = []
+    if use_api and not _has_phyling_api_key():
+        api_status["message"] = "PHYLING_API_KEY absente"
     df_api = pd.DataFrame(api_records) if api_records else pd.DataFrame(columns=cols_all)
 
     # Charger un registre local optionnel pour les métadonnées manuelles de l'API
@@ -2338,6 +2405,8 @@ with st.sidebar:
     )
     if st.button(refresh_label, use_container_width=True, help=refresh_help):
         st.cache_data.clear()
+        if has_phyling_api:
+            clear_phyling_disk_cache()
         st.rerun()
 
     use_api = has_phyling_api
@@ -2353,6 +2422,8 @@ with st.sidebar:
                 f"Phyling OK · {api_status.get('kayak_selections', 0)} sélection(s) · "
                 f"{api_status.get('pages', 0)} page(s)"
             )
+            if api_status.get("from_disk_cache"):
+                st.caption("Liste Phyling chargée depuis le cache rapide")
             if api_status.get("full_record_fallbacks", 0):
                 st.caption(f"{api_status.get('full_record_fallbacks', 0)} record(s) chargés sans sélection détaillée")
         else:
@@ -2394,9 +2465,14 @@ with st.sidebar:
 
         # ── Période : Du / Au ────────────────────────────────────────────────
         st.markdown('**Période**')
+        show_full_history = st.checkbox('Tout l\'historique', value=False, key='show_full_history')
+        from datetime import timedelta as _td
+        default_from = unique_dates[0] if show_full_history else max(
+            unique_dates[0], unique_dates[-1] - _td(days=30)
+        )
         col_d1, col_d2 = st.columns(2)
         with col_d1:
-            date_from = st.date_input('Du', value=unique_dates[0],
+            date_from = st.date_input('Du', value=default_from,
                                       min_value=unique_dates[0],
                                       max_value=unique_dates[-1],
                                       key='date_from')
