@@ -101,6 +101,7 @@ def _fetch_phyling_records_with_status(page_size=500, days_back=None):
         "raw_records": 0,
         "kayak_selections": 0,
         "records_with_selections": 0,
+        "full_record_fallbacks": 0,
         "sports_seen": [],
         "groups_seen": [],
         "message": "",
@@ -158,7 +159,7 @@ def _fetch_phyling_records_with_status(page_size=500, days_back=None):
             if group_name and group_name not in status["groups_seen"]:
                 status["groups_seen"].append(group_name)
 
-            sels = rec.get("selections", [])
+            sels = _record_selections(rec)
             if not sels:
                 continue
             status["records_with_selections"] += 1
@@ -206,6 +207,8 @@ def _fetch_phyling_records_with_status(page_size=500, days_back=None):
             for sel in sels:
                 sel_id  = sel.get("id")
                 sel_num = sel.get("num", 1)
+                if sel.get("_full_record"):
+                    status["full_record_fallbacks"] += 1
                 comment = str(sel.get("comment", rec.get("comment", "")) or "")
                 ex_name = str(sel.get("exercise_name", rec.get("exercise_name", "")) or "")
 
@@ -220,7 +223,7 @@ def _fetch_phyling_records_with_status(page_size=500, days_back=None):
                 type_course  = "Compétition" if (is_compe or sel_is_compe) else "Entraînement"
 
                 all_records.append({
-                    "fichier":     f"{rec['id']}:{sel_id}",
+                    "fichier":     f"{rec['id']}:{sel_id or ''}",
                     "athlete":     athlete,
                     "distance":    dist,
                     "date":        rec_date,
@@ -258,6 +261,29 @@ def _fetch_phyling_records_with_status(page_size=500, days_back=None):
     return all_records, status
 
 
+def _record_selections(rec):
+    """
+    Return selections for a Phyling record.
+    Some API responses do not embed selections in /records/all; in that case,
+    expose the full record as one loadable item and fetch decoded CSV without sel_id.
+    """
+    for key in ("selections", "selection", "selected_parts", "parts"):
+        value = rec.get(key)
+        if isinstance(value, list) and value:
+            return value
+        if isinstance(value, dict) and value:
+            return [value]
+
+    sel_id = rec.get("sel_id") or rec.get("selection_id")
+    return [{
+        "id": sel_id,
+        "num": rec.get("sel") or rec.get("selection_num") or 1,
+        "comment": rec.get("comment", ""),
+        "exercise_name": rec.get("exercise_name", ""),
+        "_full_record": True,
+    }]
+
+
 @st.cache_data(show_spinner=False)
 def fetch_csv_from_api(rec_id, sel_id):
     """
@@ -265,7 +291,9 @@ def fetch_csv_from_api(rec_id, sel_id):
     Retourne un DataFrame pandas.
     """
     import requests as _req, io
-    cache_path = os.path.join(CACHE_DIR, f"{rec_id}_{sel_id}.pkl")
+    sel_id = "" if sel_id is None else str(sel_id)
+    cache_suffix = sel_id if sel_id else "full"
+    cache_path = os.path.join(CACHE_DIR, f"{rec_id}_{cache_suffix}.pkl")
 
     # Lire depuis le cache disque si disponible
     if os.path.exists(cache_path):
@@ -280,13 +308,22 @@ def fetch_csv_from_api(rec_id, sel_id):
     headers = _phyling_headers()
     if not headers:
         return pd.DataFrame()
+    params = {"sel_id": sel_id} if sel_id else {}
     r = _req.post(
         f"{PHYLING_BASE_URL}/records/{rec_id}/file/decoded",
         headers=headers,
         json={},
-        params={"sel_id": sel_id},
+        params=params,
         timeout=120,
     )
+    if r.status_code != 200 and sel_id:
+        r = _req.post(
+            f"{PHYLING_BASE_URL}/records/{rec_id}/file/decoded",
+            headers=headers,
+            json={},
+            params={},
+            timeout=120,
+        )
     if r.status_code != 200:
         return pd.DataFrame()
 
@@ -1014,7 +1051,7 @@ def load_and_detect(fname, fc=FC_SMOOTH, min_d=MIN_DIST_S, min_h=MIN_PEAK_H,
     # fname est au format "rec_id:sel_id" ou un chemin local (rétrocompatibilité)
     if ':' in str(fname):
         rec_id, sel_id = str(fname).split(':', 1)
-        df = fetch_csv_from_api(int(rec_id), int(sel_id))
+        df = fetch_csv_from_api(int(rec_id), sel_id)
         if df.empty:
             return [], {}
     else:
@@ -2316,6 +2353,8 @@ with st.sidebar:
                 f"Phyling OK · {api_status.get('kayak_selections', 0)} sélection(s) · "
                 f"{api_status.get('pages', 0)} page(s)"
             )
+            if api_status.get("full_record_fallbacks", 0):
+                st.caption(f"{api_status.get('full_record_fallbacks', 0)} record(s) chargés sans sélection détaillée")
         else:
             st.warning(
                 f"Phyling non chargé : {api_status.get('message', 'erreur inconnue')} · "
