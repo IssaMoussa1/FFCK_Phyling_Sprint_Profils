@@ -14,6 +14,7 @@ Onglets :
 """
 
 import os
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -27,6 +28,7 @@ from scipy.cluster.hierarchy import dendrogram, linkage
 from scipy.spatial.distance import pdist
 from scipy.stats import pearsonr, spearmanr
 import streamlit as st
+import streamlit.components.v1 as components
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -1506,7 +1508,117 @@ html,body,[class*="css"]{font-family:'DM Sans',sans-serif;}
           border:1px solid #dde3ea;}
 .kpi-lbl{font-size:0.70rem;color:#78909c;text-transform:uppercase;letter-spacing:0.05em;}
 .kpi-val{font-size:1.4rem;font-weight:700;color:#0d2137;font-family:'DM Mono',monospace;}
+.portal-title{font-size:2rem;font-weight:800;color:#FFFFFF;margin-bottom:0.2rem;}
+.portal-sub{font-size:0.95rem;color:#AAAAAA;margin-bottom:1.4rem;}
+.portal-card{background:#f0f4f8;border:1px solid #dde3ea;border-radius:12px;padding:18px 18px;
+             min-height:170px;display:flex;flex-direction:column;justify-content:space-between;}
+.portal-card h3{color:#0d2137;font-size:1.05rem;margin:0 0 0.4rem;font-weight:800;}
+.portal-card p{color:#536270;font-size:0.86rem;margin:0 0 1rem;line-height:1.55;}
 </style>""", unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# APPLICATION PORTAL
+# ─────────────────────────────────────────────────────────────────────────────
+
+APP_OPTIONS = {
+    "portal": "Portail",
+    "sprint": "Analyse Maxi-Phyling",
+    "la28": "Préparation LA28",
+}
+
+
+def _switch_app(app_key):
+    st.session_state["active_app"] = app_key
+    st.rerun()
+
+
+def _portal_sidebar():
+    with st.sidebar:
+        st.markdown("## 🛶 FFCK Sprint")
+        uname = st.session_state.get("username", "")
+        if uname:
+            st.caption(f"Connecté : {uname}")
+
+        current = st.session_state.get("active_app", "portal")
+        labels = list(APP_OPTIONS.values())
+        keys = list(APP_OPTIONS.keys())
+        selected_label = st.selectbox(
+            "Application",
+            labels,
+            index=keys.index(current) if current in keys else 0,
+        )
+        selected_key = keys[labels.index(selected_label)]
+        if selected_key != current:
+            _switch_app(selected_key)
+
+        if st.button("Déconnexion", use_container_width=True):
+            st.session_state["authenticated"] = False
+            st.session_state.pop("active_app", None)
+            st.rerun()
+
+
+def _render_portal():
+    _portal_sidebar()
+    st.markdown('<div class="portal-title">Portail FFCK Sprint</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="portal-sub">Choisir un outil après connexion.</div>',
+        unsafe_allow_html=True,
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown(
+            """
+<div class="portal-card">
+  <div>
+    <h3>Analyse Maxi-Phyling</h3>
+    <p>Analyse des coups de pagaie, sessions, profils individuels et comparaisons.</p>
+  </div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+        if st.button("Ouvrir l'analyse sprint", use_container_width=True, type="primary"):
+            _switch_app("sprint")
+
+    with col2:
+        st.markdown(
+            """
+<div class="portal-card">
+  <div>
+    <h3>Préparation LA28</h3>
+    <p>Comparatif interactif des sites de préparation finale face à Long Beach.</p>
+  </div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+        if st.button("Ouvrir l'outil LA28", use_container_width=True, type="primary"):
+            _switch_app("la28")
+
+
+def _render_la28_tool():
+    _portal_sidebar()
+    st.markdown('<div class="app-title">Préparation finale Sprint — LA28</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="app-sub">Outil comparatif des sites de préparation face au Marine Stadium de Long Beach.</div>',
+        unsafe_allow_html=True,
+    )
+    html_path = Path(__file__).parent / "assets" / "comparatif-sites-la28-v2.html"
+    if not html_path.exists():
+        st.error("Fichier HTML LA28 introuvable dans assets/.")
+        return
+    components.html(html_path.read_text(encoding="utf-8"), height=1800, scrolling=True)
+
+
+active_app = st.session_state.get("active_app", "portal")
+if active_app == "portal":
+    _render_portal()
+    st.stop()
+if active_app == "la28":
+    _render_la28_tool()
+    st.stop()
 
 
 # ── SIDEBAR ──────────────────────────────────────────────────────────────────
@@ -1515,8 +1627,18 @@ with st.sidebar:
     uname = st.session_state.get('username', '')
     if uname:
         st.caption(f'Connecté : {uname}')
+    sprint_app_label = st.selectbox(
+        "Application",
+        list(APP_OPTIONS.values()),
+        index=list(APP_OPTIONS.keys()).index("sprint"),
+        key="active_app_selector_sprint",
+    )
+    sprint_app_key = list(APP_OPTIONS.keys())[list(APP_OPTIONS.values()).index(sprint_app_label)]
+    if sprint_app_key != "sprint":
+        _switch_app(sprint_app_key)
     if st.button('Déconnexion', use_container_width=True):
         st.session_state['authenticated'] = False
+        st.session_state.pop("active_app", None)
         st.rerun()
     st.caption('Analyse des coups de pagaie · Maxi-Phyling')
     st.divider()

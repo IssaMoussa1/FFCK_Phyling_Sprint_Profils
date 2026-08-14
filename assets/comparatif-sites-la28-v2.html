@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FFCK Sprint - Préparation LA28</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Raleway:wght@400;600;700;800;900&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+:root{
+  --bleu:#10155c;--bleu2:#1a2070;--or:#cbaa45;
+  --rouge:#C1121F;--vert:#1a7a4a;--vert2:#22a362;--orange:#c97000;
+  --gris0:#f2f4f8;--gris1:#e0e4ed;--gris2:#b0bac9;--gris3:#606c80;
+  --blanc:#ffffff;--texte:#1a2236;
+  --ombre:0 2px 10px rgba(0,0,0,.09);
+  --mono:'DM Mono',monospace;--sans:'Raleway',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--sans);background:var(--gris0);color:var(--texte);font-size:14px;line-height:1.45;overflow-x:hidden}
+header{background:var(--bleu);color:var(--blanc);padding:0 20px;display:flex;align-items:center;gap:12px;min-height:58px;box-shadow:0 2px 10px rgba(0,0,0,.35);position:sticky;top:0;z-index:900}
+.mark{width:38px;height:38px;border-radius:7px;background:var(--or);color:var(--bleu);display:flex;align-items:center;justify-content:center;font-weight:900;letter-spacing:-.06em}
+.header-title h1{font-size:1rem;font-weight:800;letter-spacing:-.01em}
+.header-title p{font-size:.7rem;opacity:.72;margin-top:1px}
+.header-badge{margin-left:auto;background:var(--or);color:var(--bleu);font-weight:800;font-size:.68rem;padding:3px 10px;border-radius:20px;letter-spacing:.05em;text-transform:uppercase;white-space:nowrap}
+.app{display:grid;grid-template-columns:320px 1fr;align-items:start}
+.sidebar{background:var(--blanc);border-right:1px solid var(--gris1);padding:16px 14px;display:flex;flex-direction:column;gap:14px;min-height:calc(100vh - 58px);position:sticky;top:58px}
+.main{padding:16px 20px;display:flex;flex-direction:column;gap:14px;min-width:0}
+.section-label{font-size:.63rem;font-weight:800;color:var(--bleu);letter-spacing:.12em;text-transform:uppercase;margin-bottom:6px;padding-bottom:4px;border-bottom:2px solid var(--or);display:inline-block}
+.control-card,.summary-card,.map-card,.detail-card,.table-card,.sources-card,.compare-card{background:var(--blanc);border-radius:7px;box-shadow:var(--ombre);border-top:3px solid var(--bleu)}
+.control-card{padding:12px 14px}
+.summary-card{padding:12px 16px;border-top-color:var(--or)}
+.map-card{overflow:hidden;border-top-color:var(--bleu2)}
+.detail-card{padding:12px 16px;border-top-color:var(--or)}
+.table-card,.sources-card{overflow:hidden}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;background:var(--blanc);border-radius:7px;box-shadow:var(--ombre);padding:8px;border-top:3px solid var(--or)}
+.tabs button{font-size:.78rem;text-transform:uppercase;letter-spacing:.05em}
+.tabs button.active{background:var(--bleu);border-color:var(--bleu);color:var(--blanc)}
+.tab-panel{display:none;flex-direction:column;gap:14px}
+.tab-panel.active{display:flex}
+.weight-row{display:grid;grid-template-columns:1fr 48px;gap:8px;align-items:center;margin:9px 0}
+.weight-row label{font-size:.68rem;font-weight:800;color:var(--gris3);text-transform:uppercase;letter-spacing:.05em}
+.weight-row input{grid-column:1/-1;width:100%;accent-color:var(--bleu)}
+.weight-value{font-family:var(--mono);font-size:.72rem;color:var(--bleu);font-weight:700;text-align:right}
+.criterion-help{font-size:.66rem;color:var(--gris3);line-height:1.45;margin:-2px 0 7px}
+.btn-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+button{font-family:var(--sans);border:1px solid var(--gris1);border-radius:5px;background:var(--blanc);color:var(--gris3);font-size:.72rem;font-weight:700;padding:6px 9px;cursor:pointer}
+button:hover,button.active{border-color:var(--bleu);color:var(--bleu);background:#eef3fa}
+.note{font-size:.68rem;color:var(--gris3);line-height:1.6}
+.note strong{color:var(--bleu)}
+.rank-list{display:flex;flex-direction:column;gap:7px;margin-top:6px}
+.rank-item{display:grid;grid-template-columns:24px 1fr 46px;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--gris1);cursor:pointer}
+.rank-item:last-child{border-bottom:none}
+.rank-badge{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--gris0);color:var(--gris3);font-weight:800;font-size:.72rem}
+.rank-item:nth-child(1) .rank-badge{background:#fff3cd;color:#856404}
+.rank-name{font-size:.78rem;font-weight:800;color:var(--bleu)}
+.rank-sub{font-size:.66rem;color:var(--gris3)}
+.rank-score{font-family:var(--mono);font-size:.78rem;font-weight:800;color:var(--bleu);text-align:right}
+#map{height:480px;width:100%;background:var(--gris1)}
+.leaflet-popup-content{font-family:var(--sans);font-size:.78rem;line-height:1.45}
+.popup-title{font-weight:800;color:var(--bleu);margin-bottom:3px}
+.popup-score{font-family:var(--mono);font-weight:800;color:var(--vert)}
+.pin{width:18px;height:18px;border-radius:50%;border:3px solid var(--blanc);box-shadow:0 1px 7px rgba(0,0,0,.35);background:var(--bleu)}
+.pin.ref{background:var(--vert)}
+.pin.selected{outline:3px solid var(--bleu);outline-offset:3px}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--gris1);background:linear-gradient(90deg,#eef3fa,var(--gris0))}
+.toolbar span{font-size:.66rem;font-weight:800;color:var(--bleu);letter-spacing:.08em;text-transform:uppercase}
+.site-title{display:flex;align-items:flex-start;gap:10px;justify-content:space-between;border-bottom:1px solid var(--gris1);padding-bottom:8px;margin-bottom:10px}
+.site-title h2{font-size:1rem;font-weight:800;color:var(--bleu)}
+.site-title p{font-size:.7rem;color:var(--gris3);margin-top:2px}
+.score-pill{font-family:var(--mono);font-weight:800;color:var(--bleu);background:#eef3fa;border:1px solid var(--gris1);border-radius:5px;padding:4px 7px;white-space:nowrap}
+.detail-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.metric{border-left:3px solid var(--or);padding:2px 0 2px 8px;min-width:0}
+.metric .lbl{font-size:.6rem;font-weight:800;color:var(--gris3);text-transform:uppercase;letter-spacing:.07em}
+.metric .val{font-size:.82rem;font-weight:800;color:var(--bleu);margin-top:2px}
+.metric .sub{font-size:.68rem;color:var(--gris3);margin-top:1px}
+.bars{display:grid;grid-template-columns:repeat(5,1fr);gap:9px;margin-top:12px}
+.barbox .lbl{display:flex;justify-content:space-between;gap:6px;font-size:.65rem;font-weight:800;color:var(--gris3);text-transform:uppercase;letter-spacing:.05em}
+.bar{height:8px;background:var(--gris1);margin-top:5px;overflow:hidden;border-radius:3px}
+.bar span{display:block;height:100%;width:var(--w);background:var(--bleu)}
+.barbox:nth-child(2) .bar span{background:var(--or)}
+.barbox:nth-child(3) .bar span{background:#1a60aa}
+.barbox:nth-child(4) .bar span{background:var(--vert)}
+.barbox:nth-child(5) .bar span{background:var(--orange)}
+.barbox:nth-child(6) .bar span{background:var(--rouge)}
+.analysis{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:12px;padding-top:12px;border-top:1px solid var(--gris1)}
+.analysis h3{font-size:.65rem;font-weight:800;color:var(--bleu);letter-spacing:.08em;text-transform:uppercase;margin-bottom:5px}
+.analysis p{font-size:.75rem;color:var(--texte)}
+.source-dot{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;margin-left:4px;border-radius:50%;background:var(--bleu);color:var(--blanc);font-family:var(--mono);font-size:.58rem;font-weight:800;text-decoration:none;vertical-align:middle;position:relative}
+.source-dot:hover,.source-dot:focus{background:var(--bleu2);outline:2px solid var(--or);outline-offset:1px}
+.source-dot::after{content:attr(data-source);position:absolute;left:50%;bottom:calc(100% + 8px);transform:translateX(-50%) translateY(3px);width:260px;padding:8px 10px;border-radius:6px;background:#1a2236;color:var(--blanc);box-shadow:0 4px 14px rgba(0,0,0,.22);font-family:var(--sans);font-size:.68rem;font-weight:600;line-height:1.45;white-space:normal;opacity:0;pointer-events:none;transition:opacity .12s,transform .12s;z-index:1000}
+.source-dot::before{content:'';position:absolute;left:50%;bottom:calc(100% + 2px);transform:translateX(-50%);border:6px solid transparent;border-top-color:#1a2236;opacity:0;transition:opacity .12s;z-index:1001}
+.source-dot:hover::after,.source-dot:focus::after{opacity:1;transform:translateX(-50%) translateY(0)}
+.source-dot:hover::before,.source-dot:focus::before{opacity:1}
+table{width:100%;border-collapse:collapse;font-size:.78rem}
+thead tr{background:var(--gris0);border-bottom:2px solid var(--gris1)}
+th{padding:8px 10px;text-align:left;font-size:.6rem;letter-spacing:.08em;text-transform:uppercase;color:var(--bleu);font-weight:800;white-space:nowrap}
+td{padding:8px 10px;border-bottom:1px solid var(--gris1);vertical-align:top}
+tr:hover td,tr.selected td{background:#f7f9fc}
+.mono{font-family:var(--mono)}
+.good{color:var(--vert);font-weight:800}
+.bad{color:var(--rouge);font-weight:800}
+.mid{color:var(--orange);font-weight:800}
+.sources-card{padding:0;border-top-color:var(--bleu)}
+.sources-card summary{list-style:none;cursor:pointer;padding:12px 16px;font-size:.63rem;font-weight:800;color:var(--bleu);letter-spacing:.12em;text-transform:uppercase;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.sources-card summary::-webkit-details-marker{display:none}
+.sources-card summary::after{content:"Afficher";font-size:.66rem;letter-spacing:.04em;color:var(--gris3);text-transform:none}
+.sources-card[open] summary{border-bottom:1px solid var(--gris1)}
+.sources-card[open] summary::after{content:"Masquer"}
+.sources-inner{padding:12px 16px}
+.sources-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px 16px;margin-top:8px}
+.sources-grid a{color:var(--bleu);font-size:.72rem;font-weight:700;text-decoration:none}
+.sources-grid a:hover{text-decoration:underline}
+.source-note{font-size:.68rem;color:var(--gris3);line-height:1.6}
+.compare-card{padding:12px 16px;border-top-color:var(--or)}
+.compare-head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;border-bottom:1px solid var(--gris1);padding-bottom:10px;margin-bottom:12px}
+.compare-head h2{font-size:1rem;font-weight:800;color:var(--bleu)}
+.compare-head p{font-size:.7rem;color:var(--gris3);margin-top:2px}
+.compare-selects{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+.compare-select{display:flex;flex-direction:column;gap:4px;min-width:230px}
+.compare-select label{font-size:.63rem;font-weight:800;color:var(--gris3);letter-spacing:.06em;text-transform:uppercase}
+.compare-select select{padding:6px 8px;border:1px solid var(--gris2);border-radius:5px;background:var(--blanc);color:var(--texte);font-family:var(--sans);font-size:.82rem}
+.compare-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.compare-site{border-left:3px solid var(--bleu);padding-left:10px}
+.compare-site.ref{border-left-color:var(--vert)}
+.compare-site h3{font-size:.9rem;color:var(--bleu);font-weight:800}
+.compare-site p{font-size:.72rem;color:var(--gris3);margin-top:2px}
+.compare-site .readout{margin-top:8px;padding-top:8px;border-top:1px solid var(--gris1);font-size:.72rem;color:var(--texte)}
+.compare-site .readout strong{color:var(--bleu)}
+.compare-table{margin-top:12px}
+.delta-good{color:var(--vert);font-weight:800}
+.delta-mid{color:var(--orange);font-weight:800}
+.delta-bad{color:var(--rouge);font-weight:800}
+@media(max-width:900px){.compare-grid{grid-template-columns:1fr}}
+@media(max-width:760px){.compare-head{display:block}.compare-selects{justify-content:flex-start;margin-top:10px}.compare-select{min-width:100%;}}
+@media(max-width:1050px){.app{grid-template-columns:1fr}.sidebar{position:static;min-height:auto}.detail-grid,.bars{grid-template-columns:repeat(2,1fr)}.analysis,.sources-grid{grid-template-columns:1fr}}
+@media(max-width:650px){header{align-items:flex-start;padding:10px 12px}.header-badge{display:none}.main{padding:12px}.detail-grid,.bars{grid-template-columns:1fr}.site-title{display:block}.score-pill{display:inline-block;margin-top:8px}#map{height:390px}th:nth-child(3),td:nth-child(3),th:nth-child(4),td:nth-child(4){display:none}}
+</style>
+</head>
+<body>
+<header>
+  <div class="mark">FF</div>
+  <div class="header-title">
+    <h1>Préparation finale Sprint - LA28</h1>
+    <p>Comparaison objectivée des sites vs Marine Stadium, Long Beach</p>
+  </div>
+  <div class="header-badge">Projet</div>
+</header>
+
+<div class="app">
+  <aside class="sidebar">
+    <section class="control-card">
+      <div class="section-label">Pondération</div>
+      <div id="weights"></div>
+      <div class="btn-row">
+        <button type="button" data-preset="balanced" class="active">Équilibré</button>
+        <button type="button" data-preset="budget">Budget</button>
+        <button type="button" data-preset="climate">Climat</button>
+        <button type="button" data-preset="basin">Bassin</button>
+      </div>
+      <p class="note" style="margin-top:10px"><strong>Lecture :</strong> la somme des pondérations reste toujours égale à 100 %. Chaque critère est noté sur 100, puis pondéré. Le coût est estimé.</p>
+    </section>
+    <section class="summary-card">
+      <div class="section-label">Classement recalculé</div>
+      <div id="ranking" class="rank-list"></div>
+    </section>
+  </aside>
+
+  <main class="main">
+    <nav class="tabs" aria-label="Navigation de l'outil">
+      <button type="button" class="active" data-tab-target="globalTab">Vue globale</button>
+      <button type="button" data-tab-target="compareTab">Comparaison directe</button>
+    </nav>
+
+    <div id="globalTab" class="tab-panel active">
+    <section class="map-card">
+      <div class="toolbar">
+        <span>Carte interactive</span>
+        <button type="button" id="fitAll">Voir tous les sites</button>
+        <button type="button" id="fitWest">Ouest / LA</button>
+        <button type="button" id="fitEast">Québec</button>
+      </div>
+      <div id="map" aria-label="Carte OpenStreetMap des sites comparés"></div>
+    </section>
+
+    <section class="detail-card" id="detail"></section>
+
+    <section class="table-card">
+      <div class="toolbar"><span>Tableau comparatif</span></div>
+      <table>
+        <thead>
+          <tr>
+            <th>Site</th><th class="mono">Score</th><th>Climat vs LA</th><th>Fuseau / distance</th><th>Pollution air/eau</th><th>Forces</th><th>Faiblesses</th>
+          </tr>
+        </thead>
+        <tbody id="siteTable"></tbody>
+      </table>
+    </section>
+
+    <details class="sources-card">
+      <summary>Sources et références</summary>
+      <div class="sources-inner">
+        <p class="source-note">Données climatiques : moyennes mensuelles juillet issues de Timeanddate, WeatherSpark ou sources météo équivalentes selon disponibilité. Infrastructures : sites officiels des bassins, fédérations, centres d'entraînement ou organisateurs. Pollution air/eau : sources locales air quality, beach/water quality, WaterAtlas, agences publiques ou gestionnaires de bassin quand disponibles. Les coûts sont des hypothèses relatives à valider par devis hébergement, bassin, transport bateaux, véhicules et restauration.</p>
+        <div id="sources" class="sources-grid"></div>
+      </div>
+    </details>
+    </div>
+
+    <div id="compareTab" class="tab-panel">
+      <section class="compare-card">
+        <div class="compare-head">
+          <div>
+            <h2>Site olympique vs deux sites candidats</h2>
+            <p>Long Beach reste la référence fixe ; choisir deux sites pour comparer les écarts principaux.</p>
+          </div>
+          <div class="compare-selects">
+            <div class="compare-select">
+              <label for="compareSiteA">Site candidat 1</label>
+              <select id="compareSiteA"></select>
+            </div>
+            <div class="compare-select">
+              <label for="compareSiteB">Site candidat 2</label>
+              <select id="compareSiteB"></select>
+            </div>
+          </div>
+        </div>
+        <div id="compareDetail"></div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<script>
+const criteria = [
+  {key:"climate", label:"Climat", weight:25, help:"Proximité avec Long Beach : température, humidité, pluie, vent et stabilité météo."},
+  {key:"basin", label:"Bassin / infrastructure", weight:22, help:"Qualité du plan d'eau, lignes, pontons, stockage bateaux, sécurité, accès coach boat."},
+  {key:"logistics", label:"Distance / fuseau", weight:18, help:"Décalage horaire vs LA, durée de transfert, simplicité avion/route/douanes."},
+  {key:"cost", label:"Coût estimé", weight:15, help:"Coût relatif attendu : hébergement, restauration, véhicules, accès bassin et disponibilité 2028."},
+  {key:"team", label:"Environnement équipe", weight:10, help:"Conditions de vie du groupe : hébergement proche, soins, musculation, calme, langue, réseau local."},
+  {key:"pollution", label:"Pollution air/eau", weight:10, help:"Risque combiné qualité de l'air, pollution urbaine, eaux de baignade/entraînement, ruissellement, bactéries ou algues."}
+];
+const presets = {
+  balanced:[25,22,18,15,10,10],
+  budget:[18,18,17,30,7,10],
+  climate:[38,18,15,9,5,15],
+  basin:[18,36,14,12,8,12]
+};
+const sites = [
+  {
+    id:"longbeach", name:"Long Beach / Marine Stadium", city:"Californie, USA", lat:33.766, lon:-118.124, ref:true,
+    tmax:28, tmin:18, humidity:67, rain:2, wind:13, tz:"UTC-7 en juillet (Pacific Daylight Time)", deltaTz:"Référence",
+    air:"Site de compétition", ground:"0 km", travel:"sur site", costText:"Très élevé en période JO",
+    basinText:"Bassin côtier urbain - site LA28 sprint paddle",
+    pollutionText:"Air urbain côtier généralement acceptable mais eau à surveiller : Marine Stadium/Long Beach est soumis aux advisories bactéries et ruissellement après pluie.",
+    scores:{climate:100, basin:100, logistics:100, cost:20, team:75, pollution:55},
+    strengths:"Spécificité maximale, reconnaissance directe, routine compétition.",
+    weaknesses:"Coûts et disponibilité très exposés à l'effet Jeux olympiques.",
+    use:"Derniers jours, repères compétition, reconnaissance officielle.",
+    sources:[["LA28 - Marine Stadium","https://la28.org/en/games-plan/venues/marine-stadium.html"],["ICF - venue LA28","https://www.canoeicf.com/news/marine-stadium-host-canoe-sprint-competitions-la28-olympic-games"],["Climat Long Beach","https://www.timeanddate.com/weather/usa/long-beach/climate"],["Long Beach - recreational water samples","https://www.longbeach.gov/health/inspections-and-reporting/inspections/recreational-water-samples/"],["IQAir - Long Beach","https://www.iqair.com/air-quality/usa/california/long-beach"]]
+  },
+  {
+    id:"newport", name:"Newport Beach", city:"Californie, USA", lat:33.6189, lon:-117.9298,
+    tmax:27, tmin:18, humidity:68, rain:2, wind:18, tz:"UTC-7 en juillet", deltaTz:"0 h vs LA",
+    air:"~55 km", ground:"~45-60 min en voiture", travel:"transfert routier simple",
+    costText:"Élevé", basinText:"Newport Aquatic Center - programme canoë-kayak sprint",
+    pollutionText:"Air plutôt favorable ; eau côtière surveillée par OC Beachinfo avec statuts bactéries, prudence après pluie/ruissellement.",
+    scores:{climate:95, basin:72, logistics:96, cost:35, team:70, pollution:82},
+    strengths:"Climat quasi identique, proximité immédiate de Long Beach, même environnement côtier.",
+    weaknesses:"Coût Californie, concurrence probable sur les créneaux et hébergements.",
+    use:"Dernière semaine si budget disponible.",
+    sources:[["Newport AC - Canoe/Kayak","https://newportaquaticcenter.com/nac-canoe-kayak-program/"],["NAC - LA28 kayak program","https://newportaquaticcenter.com/nac-canoe-kayak-program/la28kayakprogram/"],["Climat Newport Beach","https://www.timeanddate.com/weather/usa/newport-beach/climate"],["OC Beachinfo - Newport Beach","https://ocbeachinfo.com/newport/"],["IQAir - Newport Beach","https://www.iqair.com/air-quality/usa/california/newport-beach"]]
+  },
+  {
+    id:"chula", name:"Chula Vista", city:"San Diego, USA", lat:32.616, lon:-117.043,
+    tmax:25, tmin:18, humidity:71, rain:1, wind:18, tz:"UTC-7 en juillet", deltaTz:"0 h vs LA",
+    air:"~160 km", ground:"~2 h en voiture", travel:"transfert routier",
+    costText:"Élevé à très élevé", basinText:"Elite Athlete Training Center - environnement haute performance",
+    pollutionText:"Air généralement bon selon indicateurs AQI ; plan d'eau réservoir/Otay à surveiller via données locales, risque pollution inférieur à Mexico mais à vérifier en juillet.",
+    scores:{climate:86, basin:88, logistics:88, cost:38, team:88, pollution:82},
+    strengths:"Centre élite, services sportifs, environnement contrôlé.",
+    weaknesses:"Coût US/Californie, disponibilité à sécuriser très tôt.",
+    use:"Préparation encadrée puis bascule Long Beach.",
+    sources:[["CVEATC - Canoe Kayak Canada","https://trainatchulavista.com/2023/02/03/canoe-kayak-canada-are-back-for-another-winter-training-camp-at-cveatc/"],["CVEATC","https://trainatchulavista.com/"],["Climat Chula Vista","https://www.timeanddate.com/weather/@z-us-91913/climate"],["Lower Otay Reservoir - City of San Diego","https://www.sandiego.gov/reservoirs-lakes/lower-otay-reservoir"],["IQAir - Chula Vista","https://www.iqair.com/air-quality/usa/california/chula-vista"]]
+  },
+  {
+    id:"burnaby", name:"Burnaby / Vancouver", city:"Colombie-Britannique, Canada", lat:49.25, lon:-122.97,
+    tmax:23, tmin:14, humidity:72, rain:30, wind:24, tz:"UTC-7 en juillet", deltaTz:"0 h vs LA",
+    air:"~1 750 km", ground:"~2 h 45 de vol Vancouver-LA", travel:"vol direct + logistique internationale Canada/USA",
+    costText:"Moyen", basinText:"Burnaby Canoe Kayak Club / réseau sprint BC",
+    pollutionText:"Air Vancouver/Burnaby globalement bon à modéré selon épisodes ; plan d'eau intérieur à qualifier, risque ponctuel lié algues/ruissellement plutôt que pollution chronique majeure.",
+    scores:{climate:72, basin:70, logistics:82, cost:74, team:72, pollution:72},
+    strengths:"Même fuseau, côte ouest, coût potentiellement inférieur à la Californie.",
+    weaknesses:"Plus frais, plus humide/venteux ; capacité haut niveau à confirmer.",
+    use:"Camp principal hors USA.",
+    sources:[["Burnaby Canoe Kayak Club","https://www.burnabylake.com/"],["Canoe Kayak BC sprint","https://www.canoekayakbc.ca/content/sprint-flatwater"],["Climat West Vancouver","https://www.timeanddate.com/weather/@6179554/climate"],["BC air quality data","https://www2.gov.bc.ca/gov/content/environment/air-land-water/air/air-quality/current-air-quality-data"],["IQAir - Burnaby","https://www.iqair.com/ca/air-quality/canada/british-columbia/burnaby"]]
+  },
+  {
+    id:"shawnigan", name:"Shawnigan Lake", city:"Île de Vancouver, Canada", lat:48.65, lon:-123.64,
+    tmax:22, tmin:12, humidity:69, rain:16, wind:16, tz:"UTC-7 en juillet", deltaTz:"0 h vs LA",
+    air:"~1 710 km", ground:"vol + route/ferry selon itinéraire", travel:"plus complexe que Vancouver",
+    costText:"Moyen", basinText:"Lac utilisé par Canoe Kayak Canada pour camp fermé",
+    pollutionText:"Cadre lacustre peu urbanisé : risque air/eau a priori favorable, à confirmer avec suivi local saisonnier.",
+    scores:{climate:65, basin:72, logistics:68, cost:76, team:86, pollution:88},
+    strengths:"Cadre calme, concentration, camp équipe possible.",
+    weaknesses:"Trop frais par rapport à Long Beach, accès moins direct.",
+    use:"Bloc fermé J-21 à J-7.",
+    sources:[["CKC - camp Shawnigan","https://canoekayak.ca/from-bubble-to-bubble-preparing-our-sprint-team-for-a-pandemic-olympics/"],["Climat Victoria","https://www.timeanddate.com/weather/canada/victoria/climate"],["BC air quality data","https://www2.gov.bc.ca/gov/content/environment/air-land-water/air/air-quality/current-air-quality-data"]]
+  },
+  {
+    id:"montreal", name:"Montréal / Bassin olympique", city:"Québec, Canada", lat:45.506, lon:-73.527,
+    tmax:27, tmin:17, humidity:69, rain:81, wind:25, tz:"UTC-4 en juillet (Eastern Daylight Time)", deltaTz:"+3 h vs LA",
+    air:"~3 950 km", ground:"~5 h 45 à 6 h 15 de vol Montréal-LA", travel:"vol direct possible + douanes Canada/USA",
+    costText:"Moyen", basinText:"Bassin olympique 1976, eau protégée, Albano, hangars, tours",
+    pollutionText:"Air urbain Montréal à surveiller selon épisodes ; bassin olympique urbain géré, eau protégée mais à confirmer par protocole sanitaire/événement.",
+    scores:{climate:68, basin:95, logistics:58, cost:78, team:90, pollution:62},
+    strengths:"Excellent bassin, francophonie, réseau québécois/canadien, coût probable inférieur à LA.",
+    weaknesses:"Décalage +3 h, météo plus pluvieuse/orageuse et vent moyen supérieur.",
+    use:"Camp principal francophone, puis transfert LA J-7/J-5.",
+    sources:[["Parc Jean-Drapeau - Bassin olympique","https://www.parcjeandrapeau.com/en/olympic-basin-montreal/"],["Tourisme Montréal - installations","https://meet.mtl.org/en/plan/venues/sports-installations/olympic-basin-parc-jean-drapeau"],["Canoe Kayak Canada - trials","https://canoekayak.ca/event/national-team-trials-2-2/"],["Climat Montréal","https://www.timeanddate.com/weather/canada/montreal/climate"],["IQAir - Montréal","https://www.iqair.com/air-quality/canada/quebec/montreal"]]
+  },
+  {
+    id:"lacbeauport", name:"Lac-Beauport", city:"Québec, Canada", lat:46.947, lon:-71.297,
+    tmax:24, tmin:15, humidity:73, rain:149, wind:20, tz:"UTC-4 en juillet (Eastern Daylight Time)", deltaTz:"+3 h vs LA",
+    air:"~4 150 km", ground:"~6 h 30 à 7 h 30 de vol Québec/Montréal-LA selon correspondance", travel:"vol international + transfert routier local",
+    costText:"Moyen à bas", basinText:"Club de Canoë-Kayak Lac-Beauport / centre nautique municipal, plan d'eau naturel",
+    pollutionText:"Environnement lacustre moins urbain que Montréal ; air/eau probablement favorables mais à documenter localement avant décision.",
+    scores:{climate:55, basin:62, logistics:48, cost:82, team:78, pollution:82},
+    strengths:"Environnement francophone, cadre calme, coût potentiellement inférieur à Montréal/LA, club de vitesse identifié au Québec.",
+    weaknesses:"Météo plus fraîche/pluvieuse, distance et décalage +3 h.",
+    use:"Camp complémentaire francophone ou bloc amont ; moins adapté aux derniers jours.",
+    sources:[["Canoë Kayak Québec - clubs","https://canoekayakquebec.com/"],["Municipalité de Lac-Beauport - centre nautique","https://lac-beauport.quebec/loisirs-et-tourisme/infrastructures-sportives-et-recreatives/services-du-club-nautique/"],["Climate-Data - Lac-Beauport","https://en.climate-data.org/north-america/canada/quebec/lac-beauport-28923/"],["Environnement Canada - Lac-Beauport","https://weather.gc.ca/en/location/index.html?coords=46.946%2C-71.287"]]
+  },
+  {
+    id:"natoma", name:"Lake Natoma", city:"Sacramento, USA", lat:38.678, lon:-121.17,
+    tmax:33, tmin:15, humidity:50, rain:0, wind:19, tz:"UTC-7 en juillet", deltaTz:"0 h vs LA",
+    air:"~610 km", ground:"~1 h 25 de vol Sacramento-LA ou 6-7 h route", travel:"simple, même pays et même fuseau",
+    costText:"Moyen à élevé", basinText:"Site sprint reconnu, trials US, Sac State Aquatic Center",
+    pollutionText:"Air de Sacramento parfois dégradé en été/fumées ; Lake Natoma fait l'objet d'un suivi E. coli via SWAMP/Water Boards.",
+    scores:{climate:58, basin:82, logistics:76, cost:52, team:70, pollution:70},
+    strengths:"Même fuseau, très bon bassin, logistique Californie simple.",
+    weaknesses:"Climat intérieur plus chaud/sec que Long Beach.",
+    use:"Bloc chaleur sèche / alternative Californie.",
+    sources:[["US trials Lake Natoma","https://www.ranchocordovaindependent.com/2024/03/19/484984/us-canoe-kayak-olympic-team-trials-at-lake-natoma"],["Sac State Aquatic Center","https://www.sacstateaquaticcenter.com/"],["Climat Sacramento","https://www.timeanddate.com/weather/@9681521/climate"],["SWAMP - Lake Natoma water monitoring","https://www.waterboards.ca.gov/centralvalley/water_issues/swamp/rbua/"]]
+  },
+  {
+    id:"okc", name:"Oklahoma City / RIVERSPORT", city:"Oklahoma, USA", lat:35.465, lon:-97.508,
+    tmax:34, tmin:22, humidity:62, rain:90, wind:26, tz:"UTC-5 en juillet (Central Daylight Time)", deltaTz:"+2 h vs LA",
+    air:"~1 900 km", ground:"~3 h de vol OKC-LA", travel:"vol intérieur USA",
+    costText:"Moyen", basinText:"USOPC National High Performance Center, canoë-kayak",
+    pollutionText:"Air/pluie orageuse à surveiller ; eau du bassin contrôlée par gestionnaire d'événement, risque plutôt météo/ruissellement que pollution chronique documentée.",
+    scores:{climate:42, basin:88, logistics:58, cost:72, team:82, pollution:62},
+    strengths:"Très bonnes infrastructures, coût hors Californie, culture haute performance.",
+    weaknesses:"Trop chaud, orageux, venté ; moins spécifique Long Beach.",
+    use:"Bloc performance, pas prépa terminale finale.",
+    sources:[["RIVERSPORT HP Center","https://www.riversportokc.org/training-site/okcnhpc/"],["Canoe/Kayak HP","https://www.riversportokc.org/training-site/okcnhpc/canoe-kayak-high-performance/"],["Climat OKC","https://www.timeanddate.com/weather/@z-us-73139/climate"]]
+  },
+  {
+    id:"calgary", name:"Calgary / Glenmore Reservoir", city:"Alberta, Canada", lat:50.985, lon:-114.11,
+    tmax:24, tmin:10, humidity:63, rain:62, wind:25, tz:"UTC-6 en juillet (Mountain Daylight Time)", deltaTz:"+1 h vs LA",
+    air:"~1 920 km", ground:"~3 h 10 à 3 h 30 de vol Calgary-LA", travel:"vol direct possible + douanes Canada/USA",
+    costText:"Moyen", basinText:"Calgary Canoe Club sur Glenmore Reservoir, sprint canoe/kayak club",
+    pollutionText:"Air généralement favorable hors épisodes fumées ; Glenmore Reservoir est inclus dans le suivi municipal de qualité des eaux de surface.",
+    scores:{climate:58, basin:62, logistics:70, cost:74, team:68, pollution:75},
+    strengths:"Même ouest nord-américain, coût potentiellement inférieur à Californie, club sprint identifié.",
+    weaknesses:"Trop frais par rapport à Long Beach, vent moyen supérieur, altitude modérée de Calgary à prendre en compte.",
+    use:"Bloc amont ou option Canada Ouest ; à qualifier pour un collectif olympique senior.",
+    sources:[["Calgary Canoe Club","https://calgarycanoeclub.com/"],["Calgary Sprint Racing Team","https://calgarycanoeclub.com/pages/sprint-team"],["Climat Calgary","https://www.timeanddate.com/weather/canada/calgary/climate"],["City of Calgary watershed water quality","https://datastream.org/en-ca/dataset/5513f4ec-3597-42ac-a994-4dca3efa1aff"]]
+  },
+  {
+    id:"winnipeg", name:"Winnipeg / Manitoba Canoe Kayak Centre", city:"Manitoba, Canada", lat:49.864, lon:-97.125,
+    tmax:26, tmin:16, humidity:66, rain:70, wind:17, tz:"UTC-5 en juillet (Central Daylight Time)", deltaTz:"+2 h vs LA",
+    air:"~2 470 km", ground:"~3 h 45 à 4 h 30 de vol Winnipeg-LA selon vols", travel:"vol Canada/USA, parfois correspondance",
+    costText:"Moyen à bas", basinText:"Manitoba Canoe and Kayak Centre sur la Red River, centre provincial d'entraînement",
+    pollutionText:"Air urbain continental à surveiller ; plan d'eau fluvial, donc qualité de l'eau dépendante des débits, pluies et apports amont.",
+    scores:{climate:64, basin:64, logistics:52, cost:78, team:70, pollution:60},
+    strengths:"Centre provincial dédié, coût probablement favorable, structure canoë-kayak identifiée.",
+    weaknesses:"Fuseau +2 h, plan d'eau fluvial à qualifier, météo continentale plus instable que Long Beach.",
+    use:"Option coût/Canada central, plutôt bloc amont que prépa terminale.",
+    sources:[["Manitoba Paddling Association - Winnipeg","https://www.mpa.mb.ca/winnipeg"],["Manitoba Canoe and Kayak Centre","https://www.gov.mb.ca/canadagames2017/venues/canoekayakcentre.html"],["Climat Winnipeg","https://www.timeanddate.com/weather/canada/winnipeg/climate"],["WeatherSpark Winnipeg","https://weatherspark.com/y/8367/Average-Weather-in-Winnipeg-Manitoba-Canada-Year-Round"],["City of Winnipeg - river monitoring","https://legacy.winnipeg.ca/waterandwaste/sewage/monitoring/RiversSmallStreams.stm"],["Canada - Red River water quality data","https://open.canada.ca/data/en/dataset/02dc5c3d-da90-465a-8d87-4acf881ad4ba"]]
+  },
+  {
+    id:"regina", name:"Regina / Wascana Lake", city:"Saskatchewan, Canada", lat:50.436, lon:-104.604,
+    tmax:25, tmin:13, humidity:59, rain:55, wind:23, tz:"UTC-6 toute l'année (Central Standard Time)", deltaTz:"+1 h vs LA",
+    air:"~2 130 km", ground:"~3 h 20 à 4 h 30 de vol Regina-LA selon correspondance", travel:"vol Canada/USA, correspondance probable",
+    costText:"Moyen à bas", basinText:"Wascana Racing Canoe Club sur Wascana Lake, club sprint et hôte des championnats canadiens 2025",
+    pollutionText:"Air généralement bon à modéré ; Wascana Lake dispose d'historique de suivi qualité, mais le caractère urbain/lac peu renouvelé impose vérification sanitaire.",
+    scores:{climate:60, basin:72, logistics:58, cost:80, team:72, pollution:58},
+    strengths:"Vrai club sprint, Wascana Lake accueille des championnats canadiens, coût probablement favorable.",
+    weaknesses:"Vent moyen supérieur, climat plus frais/continental, accès aérien moins direct.",
+    use:"Option Canada prairies, intéressante si coût et accueil collectif sont confirmés.",
+    sources:[["Wascana Racing Canoe Club","https://www.wrccpaddle.com/content/the-club"],["CKC - Championnats canadiens 2025","https://canoekayak.ca/wascana-racing-canoe-club-awarded-the-2025-canoe-kayak-canada-sprint-national-championships/"],["Climat Regina","https://www.timeanddate.com/weather/canada/regina/climate"],["Climates to Travel - Regina","https://www.climatestotravel.com/climate/canada/regina"],["Wascana Lake water quality monitoring","https://nrc-publications.canada.ca/eng/view/accepted/?id=3859468c-2ef6-4a48-a75f-8c2b2c98a1a1"],["IQAir - Regina","https://www.iqair.com/th-en/air-quality/canada/saskatchewan/regina"]]
+  },
+  {
+    id:"sarasota", name:"Sarasota / Nathan Benderson Park", city:"Floride, USA", lat:27.374, lon:-82.451,
+    tmax:32, tmin:24, humidity:75, rain:161, wind:16, tz:"UTC-4 en juillet (Eastern Daylight Time)", deltaTz:"+3 h vs LA",
+    air:"~3 460 km", ground:"~5 h de vol Tampa/Sarasota-LA selon itinéraire", travel:"vol intérieur USA",
+    costText:"Moyen", basinText:"Nathan Benderson Park, parcours 2 000 m, 9 lignes, site d'événements sprint ACA/COPAC",
+    pollutionText:"Air Floride généralement acceptable ; Nathan Benderson Park Lake est documenté dans Sarasota WaterAtlas avec point de suivi qualité d'eau.",
+    scores:{climate:45, basin:90, logistics:48, cost:68, team:82, pollution:70},
+    strengths:"Infrastructure très solide, événements sprint nationaux/continentaux, grande capacité d'accueil.",
+    weaknesses:"Chaleur humide, pluies/orages d'été, décalage +3 h ; mimétisme Long Beach faible.",
+    use:"Très bon bassin pour stage performance, moins adapté aux derniers jours.",
+    sources:[["Nathan Benderson Park - paddling","https://nathanbendersonpark.org/paddling/"],["ACA/COPAC Olympic Qualifier Sarasota","https://nathanbendersonpark.org/event/aca-copac-olympic-qualifer/"],["ACA Sprint Nationals Sarasota","https://nathanbendersonpark.org/event/american-canoe-association-canoe-sprint-national-championships/"],["Climat Sarasota","https://www.timeanddate.com/weather/usa/sarasota/climate"],["Sarasota WaterAtlas - Nathan Benderson Park Lake","https://sarasota.wateratlas.usf.edu/waterbodies/lakes/14834/nathan-benderson-park-lake"],["Sarasota County air and water quality","https://www.scgov.net/government/planning-and-development-services/environmental-protection/air-and-water-quality"]]
+  },
+  {
+    id:"orlando", name:"Orlando / option Floride centrale", city:"Floride, USA", lat:28.538, lon:-81.379,
+    tmax:33, tmin:24, humidity:78, rain:170, wind:10, tz:"UTC-4 en juillet (Eastern Daylight Time)", deltaTz:"+3 h vs LA",
+    air:"~3 540 km", ground:"~5 h de vol Orlando-LA", travel:"vol intérieur USA direct possible",
+    costText:"Moyen", basinText:"À qualifier : nombreuses bases nautiques, mais pas de bassin sprint olympique identifié au niveau de Sarasota/Lanier",
+    pollutionText:"Air urbain et eaux intérieures Floride à surveiller en été ; bassin sprint exact non confirmé, donc pollution eau non qualifiée.",
+    scores:{climate:40, basin:45, logistics:48, cost:65, team:55, pollution:62},
+    strengths:"Accès aérien facile, offre hôtelière large, coût potentiellement maîtrisable hors zones premium.",
+    weaknesses:"Pas de site sprint olympique évident identifié, chaleur humide, orages d'été, décalage +3 h.",
+    use:"Option logistique/hébergement à creuser seulement si un bassin adapté est confirmé.",
+    sources:[["Climat Orlando - TUI","https://www.tui.co.uk/holidays/weather/the-americas/united-states-of-america/florida/orlando/july.html"],["Adventures in Florida - Orlando kayaking","https://adventuresinflorida.com/"],["ACA Sprint","https://americancanoe.org/competition/teams/olympic-paralympic/sprint/"],["City of Orlando - water quality data","https://www.orlando.gov/Parks-the-Environment/Lakes-and-Rainfall/Find-Rainfall-Water-Quality-and-Lake-Level-Data"],["Orange County Water Atlas - Lake Orlando","https://orange.wateratlas.usf.edu/waterbodies/lakes/140364/lake-orlando"]]
+  },
+  {
+    id:"lanier", name:"Lake Lanier Olympic Park / Gainesville", city:"Géorgie, USA", lat:34.354, lon:-83.829,
+    tmax:32, tmin:21, humidity:70, rain:103, wind:14, tz:"UTC-4 en juillet (Eastern Daylight Time)", deltaTz:"+3 h vs LA",
+    air:"~3 060 km", ground:"~4 h 30 à 5 h de vol Atlanta-LA + ~1 h route", travel:"vol intérieur USA + transfert routier",
+    costText:"Moyen", basinText:"Site olympique Atlanta 1996, parcours 10 lignes canoe/kayak, clubs et entraînement/régates",
+    pollutionText:"Air régional correct à surveiller en été ; Lake Lanier a un historique de surveillance qualité, avec vigilance nutriments/bactéries selon zones et conditions.",
+    scores:{climate:50, basin:92, logistics:50, cost:68, team:84, pollution:60},
+    strengths:"Très forte légitimité bassin : ancien site olympique, club local, régates et entraînement d'équipes.",
+    weaknesses:"Climat chaud/humide et plus pluvieux que Long Beach, décalage +3 h, transfert depuis Atlanta.",
+    use:"Très bon bassin d'entraînement/compétition, plutôt stage principal que terminal.",
+    sources:[["Lake Lanier Olympic Park - Gainesville","https://www.exploregainesville.org/venue/lake-lanier-olympic-park/"],["Gainesville facilities - Lake Lanier","https://www.gainesville.org/facilities/facility/details/Lake-Lanier-Olympic-Park-60"],["Explore Georgia - Lanier Canoe Kayak Club","https://exploregeorgia.org/gainesville/water-sports-recreation/canoeing-kayaking/lanier-canoe-and-kayak-club"],["Climat Gainesville GA","https://www.timeanddate.com/weather/usa/gainesville-ga/climate"],["Chattahoochee Riverkeeper - Lake Lanier water quality","https://chattahoochee.org/blog/the-lake-lanier-equation/"]]
+  },
+  {
+    id:"mexico", name:"Mexico City / Virgilio Uribe", city:"Mexique", lat:19.285, lon:-99.102,
+    tmax:24, tmin:13, humidity:64, rain:178, wind:19, tz:"UTC-6 toute l'année", deltaTz:"+1 h vs LA",
+    air:"~2 500 km", ground:"~3 h 45 de vol Mexico-LA", travel:"vol international + altitude + douanes",
+    costText:"Bas à moyen", basinText:"Piste olympique Virgilio Uribe, ancien site JO 1968",
+    altitudeText:"~2 240 m ; stress hypoxique + pollution urbaine à intégrer",
+    pollutionText:"Risque fort : altitude ~2 240 m, pollution urbaine documentée à Mexico City, saison des pluies et bassin urbain. À éviter pour une préparation terminale sauf stratégie altitude assumée.",
+    scores:{climate:25, basin:76, logistics:34, cost:86, team:42, pollution:25},
+    strengths:"Coût potentiellement favorable, ancien site olympique, fuseau acceptable.",
+    weaknesses:"Altitude ~ 2 240 m ; stress hypoxique, pollution urbaine.",
+    use:"Option budget/altitude à étudier avec prudence ; peu adaptée aux derniers jours avant Long Beach.",
+    sources:[["Olympedia - Virgilio Uribe","https://www.olympedia.org/venues/482"],["Climat Mexico City","https://www.timeanddate.com/weather/mexico/mexico-city/climate"],["WeatherSpark Mexico City","https://weatherspark.com/y/5674/Average-Weather-in-Mexico-City-Mexico-Year-Round"],["ICF - Fédération mexicaine à la Pista Olímpica","https://www.canoeicf.com/federation/federacion-mexicana-de-canotaje"],["Mexico City - altitude 2 240 m","https://mexicocity.cdmx.gob.mx/e/basics-for-mexico-city-travel/altitude-sickness/?lang=en"],["Altitude et performance - NIH/PMC","https://pmc.ncbi.nlm.nih.gov/articles/PMC10559955/"],["IQAir - pollution Mexico City","https://www.iqair.com/air-quality/mexico/mexico-city/mexico-city"]]
+  }
+];
+let selectedId = "montreal";
+let compareSelectedIdA = "montreal";
+let compareSelectedIdB = "burnaby";
+sites.forEach(site=>{
+  site.sourceMap = {
+    climate: site.sources.find(([label])=>label.toLowerCase().includes("climat")) || site.sources[0],
+    basin: site.sources.find(([label])=>/(marine|bassin|canoe|kayak|aquatic|riversport|virgilio|trials|cveatc|ckc|burnaby|newport)/i.test(label)) || site.sources[0],
+    logistics: ["Fuseau et distance","Données calculées à partir des coordonnées du site ; durées indicatives de trajet aérien/routier à confirmer selon vols 2028."],
+    cost: ["Hypothèse coût relatif","Estimation qualitative basée sur pays/région, pression JO, coût de la vie et complexité logistique ; à remplacer par devis."],
+    team: site.sources.find(([label])=>/(cveatc|ckc|canoe|kayak|riversport|parc|tourisme|aquatic)/i.test(label)) || site.sources[0],
+    pollution: site.sources.find(([label])=>/(iqair|water|beach|quality|pollution|reservoir|monitoring|atlas|air|eau|rivière|river|lake|lac)/i.test(label)) || site.sources[0]
+  };
+});
+const weightsEl = document.getElementById("weights");
+const rankingEl = document.getElementById("ranking");
+const detailEl = document.getElementById("detail");
+const tableEl = document.getElementById("siteTable");
+const sourcesEl = document.getElementById("sources");
+const compareSelectAEl = document.getElementById("compareSiteA");
+const compareSelectBEl = document.getElementById("compareSiteB");
+const compareDetailEl = document.getElementById("compareDetail");
+const markerById = {};
+let map = null;
+
+function weightedScore(site){
+  const totalWeight = criteria.reduce((sum,c)=>sum+c.weight,0) || 1;
+  return criteria.reduce((sum,c)=>sum + site.scores[c.key]*c.weight,0) / totalWeight;
+}
+function fmtScore(site){return Math.round(weightedScore(site));}
+function sortedSites(){return sites.filter(s=>!s.ref).slice().sort((a,b)=>weightedScore(b)-weightedScore(a));}
+function meanTemp(site){return Math.round(((site.tmax + site.tmin) / 2) * 10) / 10;}
+function climateText(site){
+  return `${site.tmax}/${site.tmin} °C, moy. ${meanTemp(site)} °C, humidité relative ${site.humidity} %, pluie ${site.rain} mm, vent ${site.wind} km/h`;
+}
+function signed(value, unit){
+  if(value === 0) return `0 ${unit}`;
+  return `${value > 0 ? "+" : ""}${value} ${unit}`;
+}
+function climateDelta(site){
+  const ref = sites.find(s=>s.ref);
+  if(site.ref) return "référence LA28";
+  return `Tmax ${signed(site.tmax-ref.tmax,"°C")}, humidité relative ${signed(site.humidity-ref.humidity,"%")}, pluie ${signed(site.rain-ref.rain,"mm")}, vent ${signed(site.wind-ref.wind,"km/h")}`;
+}
+function riskText(site){return site.altitudeText || "Pas de stress altitude spécifique identifié à ce stade";}
+function pollutionText(site){return site.pollutionText || "À documenter par contrôle local air/eau avant décision.";}
+function deltaClass(value, lowerIsBetter=false){
+  const absolute = Math.abs(value);
+  if(absolute <= 2) return "delta-good";
+  if(absolute <= 8) return "delta-mid";
+  return lowerIsBetter && value < 0 ? "delta-good" : "delta-bad";
+}
+function scoreDelta(value){
+  if(value >= 0) return `<span class="delta-good">+${value}</span>`;
+  if(value >= -12) return `<span class="delta-mid">${value}</span>`;
+  return `<span class="delta-bad">${value}</span>`;
+}
+function src(site, key, mark="*"){
+  const item = site.sourceMap[key];
+  if(!item) return "";
+  const [label, target] = item;
+  const text = `${label} - ${target}`;
+  if(/^https?:\/\//.test(target)){
+    return `<a class="source-dot" href="${target}" target="_blank" rel="noopener" data-source="${text}" aria-label="Source : ${label}">${mark}</a>`;
+  }
+  return `<span class="source-dot" data-source="${text}" aria-label="Source : ${label}">${mark}</span>`;
+}
+function renderWeights(){
+  weightsEl.innerHTML = criteria.map(c=>`
+    <div class="weight-row">
+      <label for="w-${c.key}">${c.label}</label>
+      <span class="weight-value" id="wv-${c.key}">${c.weight}%</span>
+      <input id="w-${c.key}" type="range" min="0" max="50" step="1" value="${c.weight}" data-key="${c.key}">
+    </div>
+    <p class="criterion-help">${c.help}</p>`).join("");
+  weightsEl.querySelectorAll("input").forEach(input=>{
+    input.addEventListener("input",()=>{
+      rebalanceWeights(input.dataset.key, Number(input.value));
+      document.querySelectorAll("[data-preset]").forEach(b=>b.classList.remove("active"));
+      updateWeightControls();
+      renderAll(false);
+    });
+  });
+}
+function rebalanceWeights(changedKey, nextValue){
+  const changed = criteria.find(item=>item.key===changedKey);
+  const others = criteria.filter(item=>item.key!==changedKey);
+  const remaining = 100 - nextValue;
+  const othersTotal = others.reduce((sum,item)=>sum+item.weight,0);
+  changed.weight = nextValue;
+  if(othersTotal === 0){
+    const share = Math.floor(remaining / others.length);
+    let residue = remaining - share * others.length;
+    others.forEach(item=>{ item.weight = share + (residue-- > 0 ? 1 : 0); });
+    return;
+  }
+  let allocated = 0;
+  others.forEach((item,index)=>{
+    if(index === others.length - 1){
+      item.weight = remaining - allocated;
+    } else {
+      item.weight = Math.round((item.weight / othersTotal) * remaining);
+      allocated += item.weight;
+    }
+  });
+}
+function updateWeightControls(){
+  criteria.forEach(c=>{
+    const input = document.getElementById(`w-${c.key}`);
+    const label = document.getElementById(`wv-${c.key}`);
+    if(input) input.value = c.weight;
+    if(label) label.textContent = `${c.weight}%`;
+  });
+}
+function renderRanking(){
+  rankingEl.innerHTML = sortedSites().map((site,index)=>`
+    <div class="rank-item" data-id="${site.id}">
+      <div class="rank-badge">${index+1}</div>
+      <div><div class="rank-name">${site.name}</div><div class="rank-sub">${site.city}</div></div>
+      <div class="rank-score">${fmtScore(site)}</div>
+    </div>`).join("");
+  rankingEl.querySelectorAll(".rank-item").forEach(el=>{
+    el.addEventListener("click",()=>selectSite(el.dataset.id,false));
+  });
+}
+function metricClass(value){return value>=75?"good":value>=55?"mid":"bad";}
+function renderDetail(){
+  const site = sites.find(s=>s.id===selectedId);
+  detailEl.innerHTML = `
+    <div class="site-title">
+      <div><h2>${site.name}</h2><p>${site.city} - ${site.use}</p></div>
+      <div class="score-pill">${site.ref ? "Référence" : fmtScore(site)+"/100"}</div>
+    </div>
+    <div class="detail-grid">
+      <div class="metric"><div class="lbl">Climat juillet ${src(site,"climate")}</div><div class="val">${climateText(site)}</div><div class="sub">vs Long Beach : ${climateDelta(site)}</div></div>
+      <div class="metric"><div class="lbl">Fuseau horaire</div><div class="val">${site.deltaTz}</div><div class="sub">${site.tz}</div></div>
+      <div class="metric"><div class="lbl">Distance / trajet</div><div class="val">${site.air}</div><div class="sub">${site.ground}</div></div>
+      <div class="metric"><div class="lbl">Coût estimé</div><div class="val">${site.costText}</div><div class="sub">à confirmer par devis 2028</div></div>
+      <div class="metric"><div class="lbl">Pollution air/eau ${src(site,"pollution")}</div><div class="val">${site.scores.pollution}/100</div><div class="sub">${pollutionText(site)}</div></div>
+    </div>
+    <div class="bars">
+      ${criteria.map(c=>`<div class="barbox"><div class="lbl"><span>${c.label.split(" ")[0]}</span><span class="${metricClass(site.scores[c.key])}">${site.scores[c.key]}</span></div><div class="bar" style="--w:${site.scores[c.key]}%"><span></span></div></div>`).join("")}
+    </div>
+    <div class="analysis">
+      <div><h3>Bassin ${src(site,"basin")}</h3><p>${site.basinText}</p></div>
+      <div><h3>Forces ${src(site,"team")}</h3><p>${site.strengths}</p></div>
+      <div><h3>Faiblesses</h3><p>${site.weaknesses}</p></div>
+    </div>`;
+}
+function renderTable(){
+  tableEl.innerHTML = sortedSites().map(site=>`
+    <tr data-id="${site.id}" class="${site.id===selectedId?"selected":""}">
+      <td><button type="button" data-id="${site.id}">${site.name}</button><br><span class="mono">${site.city}</span></td>
+      <td class="mono"><strong>${fmtScore(site)}</strong></td>
+      <td>${climateText(site)} ${src(site,"climate")}</td>
+      <td>${site.deltaTz}<br><span class="mono">${site.air}</span><br>${site.ground}</td>
+      <td>${pollutionText(site)} ${src(site,"pollution")}</td>
+      <td>${site.strengths} ${src(site,"team")}</td>
+      <td>${site.weaknesses}</td>
+    </tr>`).join("");
+  tableEl.querySelectorAll("button").forEach(btn=>btn.addEventListener("click",()=>selectSite(btn.dataset.id,false)));
+}
+function renderSources(){
+  const seen = new Set();
+  const links = [];
+  sites.forEach(site=>site.sources.forEach(([label,url])=>{
+    if(!seen.has(url)){seen.add(url); links.push([label,url]);}
+  }));
+  sourcesEl.innerHTML = links.map(([label,url])=>`<a href="${url}" target="_blank" rel="noopener">${label}</a>`).join("");
+}
+function renderCompareOptions(){
+  if(!compareSelectAEl || !compareSelectBEl) return;
+  const candidates = sortedSites();
+  const currentA = sites.find(s=>s.id===compareSelectedIdA && !s.ref) ? compareSelectedIdA : candidates[0].id;
+  const currentB = sites.find(s=>s.id===compareSelectedIdB && !s.ref) ? compareSelectedIdB : (candidates[1] || candidates[0]).id;
+  const options = candidates.map(site=>`<option value="${site.id}">${site.name}</option>`).join("");
+  compareSelectAEl.innerHTML = options;
+  compareSelectBEl.innerHTML = options;
+  compareSelectAEl.value = currentA;
+  compareSelectBEl.value = currentB;
+}
+function renderCompare(){
+  if(!compareDetailEl || !compareSelectAEl || !compareSelectBEl) return;
+  const ref = sites.find(s=>s.ref);
+  const siteA = sites.find(s=>s.id===compareSelectedIdA) || sortedSites()[0];
+  const siteB = sites.find(s=>s.id===compareSelectedIdB) || sortedSites()[1] || siteA;
+  const siteClimateCell = (site, key, unit, lowerIsBetter=false) => {
+    const delta = site[key] - ref[key];
+    return `<span class="mono">${site[key]} ${unit}</span><br><span class="${deltaClass(delta,lowerIsBetter)}">${signed(delta,unit)}</span>`;
+  };
+  const rows = [
+    ["Tmax juillet", `${ref.tmax} °C`, siteClimateCell(siteA,"tmax","°C"), siteClimateCell(siteB,"tmax","°C")],
+    ["Tmin juillet", `${ref.tmin} °C`, siteClimateCell(siteA,"tmin","°C"), siteClimateCell(siteB,"tmin","°C")],
+    ["Température moyenne", `${meanTemp(ref)} °C`, `<span class="mono">${meanTemp(siteA)} °C</span><br><span class="${deltaClass(meanTemp(siteA)-meanTemp(ref))}">${signed(Math.round((meanTemp(siteA)-meanTemp(ref))*10)/10,"°C")}</span>`, `<span class="mono">${meanTemp(siteB)} °C</span><br><span class="${deltaClass(meanTemp(siteB)-meanTemp(ref))}">${signed(Math.round((meanTemp(siteB)-meanTemp(ref))*10)/10,"°C")}</span>`],
+    ["Humidité relative", `${ref.humidity} %`, siteClimateCell(siteA,"humidity","%"), siteClimateCell(siteB,"humidity","%")],
+    ["Pluie mensuelle", `${ref.rain} mm`, siteClimateCell(siteA,"rain","mm",true), siteClimateCell(siteB,"rain","mm",true)],
+    ["Vent moyen", `${ref.wind} km/h`, siteClimateCell(siteA,"wind","km/h",true), siteClimateCell(siteB,"wind","km/h",true)],
+    ["Fuseau horaire", ref.deltaTz, `<span class="${siteA.deltaTz === "0 h vs LA" ? "delta-good" : "delta-mid"}">${siteA.deltaTz}</span><br>${siteA.tz}`, `<span class="${siteB.deltaTz === "0 h vs LA" ? "delta-good" : "delta-mid"}">${siteB.deltaTz}</span><br>${siteB.tz}`],
+    ["Distance / trajet", "0 km", `<span class="mono">${siteA.air}</span><br>${siteA.ground}`, `<span class="mono">${siteB.air}</span><br>${siteB.ground}`],
+    ["Altitude", "Pas de stress altitude spécifique", riskText(siteA), riskText(siteB)],
+    ["Pollution air/eau", "Référence à surveiller : eau urbaine côtière", `${pollutionText(siteA)}<br><strong>${siteA.scores.pollution}/100</strong> ${src(siteA,"pollution")}`, `${pollutionText(siteB)}<br><strong>${siteB.scores.pollution}/100</strong> ${src(siteB,"pollution")}`],
+    ["Bassin / infrastructure", ref.basinText, `${siteA.basinText}<br>${scoreDelta(siteA.scores.basin-ref.scores.basin)}`, `${siteB.basinText}<br>${scoreDelta(siteB.scores.basin-ref.scores.basin)}`],
+    ["Score pondéré", "Référence", `<strong>${fmtScore(siteA)}/100</strong><br>${scoreDelta(fmtScore(siteA)-100)}`, `<strong>${fmtScore(siteB)}/100</strong><br>${scoreDelta(fmtScore(siteB)-100)}`]
+  ];
+  compareDetailEl.innerHTML = `
+    <div class="compare-grid">
+      <div class="compare-site ref">
+        <h3>${ref.name}</h3>
+        <p>${ref.city} - ${ref.basinText}</p>
+        <p class="mono" style="margin-top:6px">${climateText(ref)}</p>
+      </div>
+      <div class="compare-site">
+        <h3>${siteA.name}</h3>
+        <p>${siteA.city} - ${siteA.use}</p>
+        <p class="mono" style="margin-top:6px">${climateText(siteA)}</p>
+        <div class="readout"><strong>Forces :</strong> ${siteA.strengths}<br><strong>Vigilances :</strong> ${siteA.weaknesses}</div>
+      </div>
+      <div class="compare-site">
+        <h3>${siteB.name}</h3>
+        <p>${siteB.city} - ${siteB.use}</p>
+        <p class="mono" style="margin-top:6px">${climateText(siteB)}</p>
+        <div class="readout"><strong>Forces :</strong> ${siteB.strengths}<br><strong>Vigilances :</strong> ${siteB.weaknesses}</div>
+      </div>
+    </div>
+    <table class="compare-table">
+      <thead><tr><th>Critère</th><th>Long Beach</th><th>${siteA.name}</th><th>${siteB.name}</th></tr></thead>
+      <tbody>
+        ${rows.map(row=>`<tr><td>${row[0]}</td><td>${row[1]}</td><td>${row[2]}</td><td>${row[3]}</td></tr>`).join("")}
+      </tbody>
+    </table>
+    `;
+}
+function renderAll(updateMap=true){
+  renderRanking();
+  renderDetail();
+  renderTable();
+  renderCompareOptions();
+  renderCompare();
+  if(updateMap) refreshMarkers();
+}
+function selectSite(id, zoom=false){
+  selectedId = id;
+  if(sites.find(s=>s.id===id && !s.ref)) compareSelectedIdA = id;
+  renderAll(false);
+  Object.entries(markerById).forEach(([key,marker])=>{
+    const el = marker.getElement();
+    if(el) {
+      const pin = el.querySelector(".pin");
+      if(pin) pin.classList.toggle("selected", key===id);
+    }
+  });
+  if(zoom && markerById[id]){
+    map.setView(markerById[id].getLatLng(), id==="longbeach" || id==="newport" ? 10 : 7, {animate:true});
+    markerById[id].openPopup();
+  }
+}
+function refreshMarkers(){
+  if(!map) return;
+  Object.values(markerById).forEach(marker=>map.removeLayer(marker));
+  sites.forEach(site=>{
+    const score = site.ref ? 100 : fmtScore(site);
+    const cls = site.ref ? "ref" : "";
+    const icon = L.divIcon({className:"", html:`<div class="pin ${cls}${site.id===selectedId ? " selected" : ""}" aria-hidden="true"></div>`, iconSize:[18,18], iconAnchor:[9,9]});
+    const marker = L.marker([site.lat, site.lon], {icon}).addTo(map);
+    marker.bindPopup(`<div class="popup-title">${site.name}</div><div>${site.city}</div><div>Score : <span class="popup-score">${site.ref?"Référence":score+"/100"}</span></div><div>${site.deltaTz}</div><div>${site.ground}</div>`);
+    marker.on("click",()=>selectSite(site.id,false));
+    markerById[site.id] = marker;
+  });
+}
+function fit(ids){
+  if(!map) return;
+  const group = ids.map(id=>markerById[id]).filter(Boolean);
+  map.fitBounds(L.featureGroup(group).getBounds().pad(0.18));
+}
+document.querySelectorAll("[data-preset]").forEach(btn=>{
+  btn.addEventListener("click",()=>{
+    criteria.forEach((c,i)=>c.weight = presets[btn.dataset.preset][i]);
+    document.querySelectorAll("[data-preset]").forEach(b=>b.classList.remove("active"));
+    btn.classList.add("active");
+    renderWeights();
+    renderAll();
+  });
+});
+document.getElementById("fitAll").addEventListener("click",()=>fit(sites.map(s=>s.id)));
+document.getElementById("fitWest").addEventListener("click",()=>fit(["longbeach","newport","chula","burnaby","shawnigan","natoma","calgary","regina","winnipeg"]));
+document.getElementById("fitEast").addEventListener("click",()=>fit(["montreal","lacbeauport"]));
+document.querySelectorAll("[data-tab-target]").forEach(button=>{
+  button.addEventListener("click",()=>{
+    document.querySelectorAll("[data-tab-target]").forEach(item=>item.classList.remove("active"));
+    document.querySelectorAll(".tab-panel").forEach(panel=>panel.classList.remove("active"));
+    button.classList.add("active");
+    document.getElementById(button.dataset.tabTarget).classList.add("active");
+    if(map) setTimeout(()=>map.invalidateSize(), 0);
+  });
+});
+compareSelectAEl.addEventListener("change",()=>{
+  compareSelectedIdA = compareSelectAEl.value;
+  renderCompare();
+});
+compareSelectBEl.addEventListener("change",()=>{
+  compareSelectedIdB = compareSelectBEl.value;
+  renderCompare();
+});
+
+renderWeights();
+renderSources();
+if(window.L){
+  map = L.map("map", {scrollWheelZoom:true}).setView([40,-105],4);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 18,
+    attribution: "&copy; OpenStreetMap contributors"
+  }).addTo(map);
+  renderAll();
+  fit(sites.map(s=>s.id));
+  selectSite(selectedId,false);
+  window.addEventListener("load",()=>setTimeout(()=>map.invalidateSize(),100));
+} else {
+  document.getElementById("map").innerHTML = '<div style="padding:18px;color:var(--bleu);font-weight:800">Carte indisponible : la librairie Leaflet ou les tuiles OpenStreetMap semblent bloquées par le navigateur. Essayer Chrome/Edge, désactiver temporairement le blocage de contenu pour ce fichier local, ou servir le fichier via un petit serveur local.</div>';
+  renderAll(false);
+}
+</script>
+</body>
+</html>
