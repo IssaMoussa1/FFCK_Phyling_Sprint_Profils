@@ -1533,6 +1533,10 @@ def _switch_app(app_key):
     st.rerun()
 
 
+def _get_la28_external_url():
+    return os.getenv("LA28_TOOL_URL") or st.secrets.get("LA28_TOOL_URL", "")
+
+
 def _portal_sidebar():
     with st.sidebar:
         st.markdown("## 🛶 FFCK Sprint")
@@ -1583,6 +1587,7 @@ def _render_portal():
             _switch_app("sprint")
 
     with col2:
+        la28_url = _get_la28_external_url()
         st.markdown(
             """
 <div class="portal-card">
@@ -1594,22 +1599,69 @@ def _render_portal():
 """,
             unsafe_allow_html=True,
         )
-        if st.button("Ouvrir l'outil LA28", use_container_width=True, type="primary"):
+        if la28_url:
+            st.link_button("Ouvrir l'outil LA28", la28_url, use_container_width=True, type="primary")
+        elif st.button("Ouvrir l'outil LA28", use_container_width=True, type="primary"):
             _switch_app("la28")
 
 
 def _render_la28_tool():
-    _portal_sidebar()
-    st.markdown('<div class="app-title">Préparation finale Sprint — LA28</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="app-sub">Outil comparatif des sites de préparation face au Marine Stadium de Long Beach.</div>',
-        unsafe_allow_html=True,
-    )
     html_path = Path(__file__).parent / "assets" / "comparatif-sites-la28-v2.html"
     if not html_path.exists():
         st.error("Fichier HTML LA28 introuvable dans assets/.")
         return
-    components.html(html_path.read_text(encoding="utf-8"), height=1800, scrolling=True)
+    html = html_path.read_text(encoding="utf-8")
+    st.markdown(
+        """
+<style>
+html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"]{
+    margin:0 !important;
+    padding:0 !important;
+    overflow:hidden !important;
+    background:#f2f4f8 !important;
+}
+[data-testid="stSidebar"],
+[data-testid="collapsedControl"],
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="stHeader"],
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+[data-testid="stStatusWidget"],
+#MainMenu,
+.stDeployButton,
+footer{
+    display:none !important;
+    visibility:hidden !important;
+}
+[data-testid="stMainBlockContainer"],
+.main .block-container,
+.block-container,
+section.main > div,
+[data-testid="stVerticalBlock"],
+[data-testid="stElementContainer"]{
+    margin:0 !important;
+    padding:0 !important;
+    max-width:none !important;
+    width:100vw !important;
+}
+iframe,
+[data-testid="stIFrame"] iframe{
+    position:fixed !important;
+    inset:0 !important;
+    width:100vw !important;
+    height:100vh !important;
+    min-width:100vw !important;
+    min-height:100vh !important;
+    border:0 !important;
+    z-index:2147483647 !important;
+    display:block !important;
+    background:#f2f4f8 !important;
+}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+    components.html(html, height=1, scrolling=True)
 
 
 active_app = st.session_state.get("active_app", "portal")
