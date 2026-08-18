@@ -1534,7 +1534,11 @@ def _switch_app(app_key):
 
 
 def _get_la28_external_url():
-    return os.getenv("LA28_TOOL_URL") or st.secrets.get("LA28_TOOL_URL", "")
+    url = os.getenv("LA28_TOOL_URL") or st.secrets.get("LA28_TOOL_URL", "")
+    if not url:
+        auth_users = st.secrets.get("auth", {}).get("users", {})
+        url = auth_users.get("LA28_TOOL_URL", "")
+    return url
 
 
 def _portal_sidebar():
